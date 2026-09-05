@@ -1,69 +1,49 @@
 [app]
 
-# Application name
 title = MEXC Mobile Scalper
 
-# Package information
 package.name = mexcmobilescalper
 package.domain = com.mexcscalper
 
-# Source
 source.dir = .
-
-# Files included in the APK
 source.include_exts = py,png,jpg,jpeg,kv,json,txt
 
-# Application version
-version = 1.0.1
+version = 1.0.2
 
-# Python / Kivy requirements
-requirements = python3,kivy==2.3.1,requests
+requirements = python3,kivy==2.3.1,requests==2.32.5
 
-# Screen
 orientation = portrait
 fullscreen = 0
 
-# Android permissions
 android.permissions = INTERNET,ACCESS_NETWORK_STATE
 
-# Android target
-android.api = 35
-
-# Minimum Android version
+# Android 12 device
+android.api = 33
 android.minapi = 21
 
-# Android NDK
+# Recommended NDK
 android.ndk = 28c
-
-# NDK API
 android.ndk_api = 21
 
-# CPU architecture
-android.archs = arm64-v8a
+# ONN 100071481A requires ARM 32-bit
+android.archs = armeabi-v7a
 
-# AndroidX
 android.enable_androidx = True
 
-# Android entry point
 android.entrypoint = org.kivy.android.PythonActivity
 
-# Android theme
 android.apptheme = "@android:style/Theme.NoTitleBar"
 
-# Accept Android SDK licenses
 android.accept_sdk_license = True
 
-# Do not use private storage
 android.private_storage = True
 
-# Debug APK
 android.debug_artifact = apk
 
-# Python-for-Android
-p4a.fork = kivy
-p4a.branch = master
+# SDL2 is the correct bootstrap for Kivy
+p4a.bootstrap = sdl2
 
-# Build settings
+
 [buildozer]
 
 log_level = 2
