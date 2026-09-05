@@ -3,8 +3,8 @@ title = MEXC Mobile Scalper
 package.name = mexcmobilescalper
 package.domain = com.mexcscalper
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,kv,json,txt,db
-version = 1.0.0
+source.include_exts = py,png,jpg,jpeg,kv,json,txt
+version = 1.0.1
 requirements = python3,kivy==2.3.1,requests
 orientation = portrait
 fullscreen = 0
@@ -15,7 +15,7 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE
 # Build settings
 android.api = 35
 android.minapi = 23
-android.archs = arm64-v8a,armeabi-v7a
+android.archs = arm64-v8a
 android.accept_sdk_license = True
 
 [buildozer]
