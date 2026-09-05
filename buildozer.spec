@@ -15,7 +15,7 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE
 # Build settings
 android.api = 33
 android.minapi = 21
-android.ndk = 25
+android.ndk = 28c
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 
