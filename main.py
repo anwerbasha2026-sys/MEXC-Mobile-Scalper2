@@ -434,8 +434,8 @@ def check_conditions(symbol):
         total=sum(v[-21:-1])
         vwap=sum(((h[i]+l[i]+c[i])/3)*v[i] for i in range(-21,-1))/total if total else c[-2]
         above=c[-2]>vwap
-        avg=sum(v[-101:-1])/100 if len(v) >= 101 else 1
-        high=v[-1] > avg*1.8
+        avg=sum(v[-101:-2])/100 if len(v) >= 101 else 1
+        high=v[-2] > avg*1.8
 
         if cross and aligned and above and high:
             return True,c[-1],"Confirmed entry conditions met"
