@@ -85,7 +85,7 @@ ScreenManager:
                 BoxLayout:
                     orientation: "vertical"
                     Label:
-                        text: "العملة"
+                        text: "Symbol"
                         font_size: "11sp"
                         color: .55,.6,.68,1
                     Label:
@@ -96,7 +96,7 @@ ScreenManager:
                 BoxLayout:
                     orientation: "vertical"
                     Label:
-                        text: "السعر الحالي"
+                        text: "Current Price"
                         font_size: "11sp"
                         color: .55,.6,.68,1
                     Label:
@@ -118,7 +118,7 @@ ScreenManager:
                         radius: [dp(14)]
 
                 Label:
-                    text: "الربح المباشر"
+                    text: "Live P&L"
                     font_size: "12sp"
                     color: .55,.6,.68,1
                     size_hint_y: None
@@ -129,7 +129,7 @@ ScreenManager:
                     bold: True
 
             Label:
-                text: "إعدادات الاتصال"
+                text: "Connection Settings"
                 font_size: "15sp"
                 bold: True
                 size_hint_y: None
@@ -157,7 +157,7 @@ ScreenManager:
                 foreground_color: 1,1,1,1
 
             Label:
-                text: "إدارة المخاطر"
+                text: "Risk Management"
                 font_size: "15sp"
                 bold: True
                 size_hint_y: None
@@ -171,7 +171,7 @@ ScreenManager:
                 TextInput:
                     id: amount
                     text: "109"
-                    hint_text: "المبلغ $"
+                    hint_text: "Amount $"
                     input_filter: "float"
                     multiline: False
                     background_color: .075,.09,.12,1
@@ -201,19 +201,19 @@ ScreenManager:
                 spacing: dp(8)
 
                 Button:
-                    text: "▶ بدء البحث"
+                    text: "▶ Start Scanning"
                     bold: True
                     background_color: .08,.48,.75,1
                     on_release: app.start_scanning()
 
                 Button:
-                    text: "■ إيقاف"
+                    text: "■ Stop"
                     bold: True
                     background_color: .8,.42,.08,1
                     on_release: app.stop_scanning()
 
             Button:
-                text: "إغلاق الصفقة فوراً"
+                text: "Close Position Now"
                 size_hint_y: None
                 height: dp(55)
                 bold: True
@@ -221,7 +221,7 @@ ScreenManager:
                 on_release: app.close_position_manual()
 
             Label:
-                text: "السجل المباشر"
+                text: "Live Log"
                 font_size: "15sp"
                 bold: True
                 size_hint_y: None
@@ -344,7 +344,7 @@ def signed_request(method, path, params, api, secret):
 
 def buy_market(symbol, amount, api, secret):
     if not api or not secret:
-        return False, "أدخل API Key و Secret Key", 0
+        return False, "Enter API Key and Secret Key", 0
     try:
         r = signed_request("POST","/order",{
             "symbol":symbol.replace("/","").upper(),
@@ -354,7 +354,7 @@ def buy_market(symbol, amount, api, secret):
         if r.status_code == 200 and "orderId" in data:
             time.sleep(.3)
             p = get_price(symbol)
-            return True, "تم تنفيذ الشراء: "+str(data["orderId"]), p or 0
+            return True, "Buy executed: "+str(data["orderId"]), p or 0
         return False, data.get("msg",str(data)), 0
     except Exception as e:
         return False, str(e), 0
@@ -375,7 +375,7 @@ def sell_market(symbol, api, secret):
     try:
         qty = free_balance(symbol,api,secret)
         if qty <= 0:
-            return True, "لا يوجد رصيد للبيع"
+            return True, "No balance available to sell"
         precision = SYMBOL_RULES_CACHE.get(symbol.replace("/","").upper(), 4)
         r = signed_request("POST","/order",{
             "symbol":symbol.replace("/","").upper(),
@@ -384,7 +384,7 @@ def sell_market(symbol, api, secret):
         },api,secret)
         data = r.json()
         if r.status_code == 200 and "orderId" in data:
-            return True, "تم تنفيذ البيع"
+            return True, "Sell executed"
         return False, data.get("msg",str(data))
     except Exception as e:
         return False, str(e)
@@ -416,10 +416,10 @@ def check_conditions(symbol):
     try:
         s=symbol.replace("/","").upper()
         if not all(ema_trend(s,i) for i in ("5m","15m","60m")):
-            return False,0,"الاتجاه العام غير صاعد"
+            return False,0,"Overall trend is not bullish"
         data=safe_get(BASE_URL+"/klines",{"symbol":s,"interval":"5m","limit":220})
         if not isinstance(data, list) or len(data)<200:
-            return False,0,"بيانات الشموع غير كافية"
+            return False,0,"Insufficient candle data"
         c=[float(k[4]) for k in data]
         v=[float(k[5]) for k in data]
         h=[float(k[2]) for k in data]
@@ -427,19 +427,19 @@ def check_conditions(symbol):
 
         e9,e21,e200=ema(c,9),ema(c,21),ema(c,200)
         if not e9 or not e21 or not e200 or len(e9) < 3:
-            return False,0,"خطأ حساب المؤشرات"
+            return False,0,"Indicator calculation error"
 
         cross=e9[-3]<=e21[-3] and e9[-2]>e21[-2]
         aligned=e9[-2]>e21[-2]>e200[-2]
         total=sum(v[-21:-1])
         vwap=sum(((h[i]+l[i]+c[i])/3)*v[i] for i in range(-21,-1))/total if total else c[-2]
         above=c[-2]>vwap
-        avg=sum(v[-101:-2])/99 if len(v) >= 101 else 1
-        high=v[-2] > avg*1.8
+        avg=sum(v[-101:-1])/100 if len(v) >= 101 else 1
+        high=v[-1] > avg*1.8
 
         if cross and aligned and above and high:
-            return True,c[-1],"تحققت شروط الاقتناص المؤكدة"
-        return False,c[-1],"شروط غير مكتملة"
+            return True,c[-1],"Confirmed entry conditions met"
+        return False,c[-1],"Conditions not met"
     except Exception as e:
         return False,0,str(e)
 
@@ -464,7 +464,7 @@ class MEXCMobileApp(App):
         if pos:
             self.position=pos
             self.active_symbol=pos["symbol"]
-            self.log("تمت استعادة الصفقة المفتوحة.")
+            self.log("Open position restored.")
             self.start_ticker()
         return root
 
@@ -495,7 +495,7 @@ class MEXCMobileApp(App):
     def start_scanning(self):
         api,secret,_,_,_=self.values()
         if not api or not secret:
-            self.log("⚠️ أدخل مفاتيح API أولاً.")
+            self.log("⚠️ Enter API keys first.")
             return
         with STATE_LOCK:
             if self.running or self.position:
@@ -503,12 +503,12 @@ class MEXCMobileApp(App):
             self.running=True
 
         self.save_inputs()
-        self.log("[بدء] البحث عن فرصة...")
+        self.log("[START] Searching for an opportunity...")
 
         def scan():
             update_exchange_info()
             symbols=get_top_200_symbols()
-            self.log(f"فحص {len(symbols)} عملة...")
+            self.log(f"Scanning {len(symbols)} symbols...")
             while True:
                 with STATE_LOCK:
                     if not self.running:
@@ -533,14 +533,14 @@ class MEXCMobileApp(App):
     def stop_scanning(self):
         with STATE_LOCK:
             self.running=False
-        self.log("[إيقاف] تم إيقاف البحث.")
+        self.log("[STOP] Scanning stopped.")
 
     def execute_buy(self,symbol,approx):
         api,secret,amount,tp,sl=self.values()
-        self.log(f"[شراء] {symbol} بمبلغ ${amount}...")
+        self.log(f"[BUY] {symbol} with ${amount}...")
         ok,msg,entry=buy_market(symbol,amount,api,secret)
         if not ok or entry<=0:
-            self.log("[فشل الشراء] "+msg)
+            self.log("[BUY FAILED] "+msg)
             self.start_scanning()
             return
 
@@ -549,7 +549,7 @@ class MEXCMobileApp(App):
                            "tp_percent":tp,"sl_percent":sl}
         save_active_position(symbol,entry,amount,tp,sl)
         self.active_symbol=symbol
-        self.log(f"[تم الشراء] {symbol} | دخول ${entry:.6f}")
+        self.log(f"[BUY SUCCESS] {symbol} | Entry ${entry:.6f}")
         self.start_ticker()
 
     def start_ticker(self):
@@ -593,7 +593,7 @@ class MEXCMobileApp(App):
             self.position=None
 
         api,secret,_,_,_=self.values()
-        self.log(f"[إغلاق] {pos['symbol']} ({reason})...")
+        self.log(f"[CLOSE] {pos['symbol']} ({reason})...")
         ok,msg=sell_market(pos["symbol"],api,secret)
         exit_price=get_price(pos["symbol"]) or pos["entry_price"]
         pct=(exit_price-pos["entry_price"])/pos["entry_price"]*100
@@ -604,7 +604,7 @@ class MEXCMobileApp(App):
         self.active_symbol="--"
         self.current_price_text="--"
         self.pnl_text="$0.00 (0.00%)"
-        self.log(("[تم الإغلاق] " if ok else "[تحذير] ")+msg)
+        self.log(("[CLOSED] " if ok else "[WARNING] ")+msg)
         if reason!="MANUAL":
             self.start_scanning()
 
