@@ -1,623 +1,375 @@
+import sys
 import os
 import time
+import math
 import sqlite3
-import hmac
-import hashlib
-import threading
-from datetime import datetime
-from urllib.parse import urlencode
-
 import requests
-from kivy.app import App
+import numpy as np
+import pandas as pd
+import ta
+
+from kivymd.app import MDApp
+from kivymd.uix.screen import MDScreen
+from kivymd.uix.boxlayout import MDBoxLayout
+from kivymd.uix.button import MDRaisedButton, MDRectangleFlatButton
+from kivymd.uix.label import MDLabel
+from kivymd.uix.card import MDCard
+from kivymd.uix.scrollview import MDScrollView
 from kivy.clock import Clock
-from kivy.lang import Builder
-from kivy.properties import StringProperty
-from kivy.uix.screenmanager import Screen
+from kivy.core.window import Window
 
-DB_NAME = os.path.join(os.path.dirname(__file__), "bot_data.db")
-BASE_URL = "https://api.mexc.com/api/v3"
-
-SYMBOL_RULES_CACHE = {}
-TREND_CACHE = {}
-CACHE_TTL = 300
-STATE_LOCK = threading.Lock()
-
-KV = r"""
-#:import dp kivy.metrics.dp
-
-ScreenManager:
-    MainScreen:
-
-<MainScreen>:
-    name: "main"
-    canvas.before:
-        Color:
-            rgba: .035,.04,.055,1
-        Rectangle:
-            pos: self.pos
-            size: self.size
-
-    ScrollView:
-        do_scroll_x: False
-        bar_width: dp(3)
-
-        BoxLayout:
-            orientation: "vertical"
-            spacing: dp(12)
-            padding: dp(12)
-            size_hint_y: None
-            height: self.minimum_height
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(55)
-                padding: dp(4)
-
-                Label:
-                    text: "MEXC"
-                    font_size: "25sp"
-                    bold: True
-                    color: .15,.8,1,1
-                    halign: "left"
-                    text_size: self.size
-
-                Label:
-                    text: "MOBILE SCALPER"
-                    font_size: "12sp"
-                    color: .65,.7,.75,1
-                    halign: "right"
-                    valign: "center"
-                    text_size: self.size
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(88)
-                padding: dp(12)
-                spacing: dp(8)
-                canvas.before:
-                    Color:
-                        rgba: .07,.085,.11,1
-                    RoundedRectangle:
-                        pos: self.pos
-                        size: self.size
-                        radius: [dp(14)]
-
-                BoxLayout:
-                    orientation: "vertical"
-                    Label:
-                        text: "Symbol"
-                        font_size: "11sp"
-                        color: .55,.6,.68,1
-                    Label:
-                        text: app.active_symbol
-                        font_size: "22sp"
-                        bold: True
-
-                BoxLayout:
-                    orientation: "vertical"
-                    Label:
-                        text: "Current Price"
-                        font_size: "11sp"
-                        color: .55,.6,.68,1
-                    Label:
-                        text: app.current_price_text
-                        font_size: "18sp"
-                        bold: True
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(105)
-                padding: dp(12)
-                orientation: "vertical"
-                canvas.before:
-                    Color:
-                        rgba: .07,.085,.11,1
-                    RoundedRectangle:
-                        pos: self.pos
-                        size: self.size
-                        radius: [dp(14)]
-
-                Label:
-                    text: "Live P&L"
-                    font_size: "12sp"
-                    color: .55,.6,.68,1
-                    size_hint_y: None
-                    height: dp(25)
-                Label:
-                    text: app.pnl_text
-                    font_size: "27sp"
-                    bold: True
-
-            Label:
-                text: "Connection Settings"
-                font_size: "15sp"
-                bold: True
-                size_hint_y: None
-                height: dp(30)
-
-            TextInput:
-                id: api
-                hint_text: "API Key"
-                multiline: False
-                size_hint_y: None
-                height: dp(46)
-                padding: [dp(12),dp(12)]
-                background_color: .075,.09,.12,1
-                foreground_color: 1,1,1,1
-
-            TextInput:
-                id: secret
-                hint_text: "Secret Key"
-                password: True
-                multiline: False
-                size_hint_y: None
-                height: dp(46)
-                padding: [dp(12),dp(12)]
-                background_color: .075,.09,.12,1
-                foreground_color: 1,1,1,1
-
-            Label:
-                text: "Risk Management"
-                font_size: "15sp"
-                bold: True
-                size_hint_y: None
-                height: dp(30)
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(48)
-                spacing: dp(7)
-
-                TextInput:
-                    id: amount
-                    text: "109"
-                    hint_text: "Amount $"
-                    input_filter: "float"
-                    multiline: False
-                    background_color: .075,.09,.12,1
-                    foreground_color: 1,1,1,1
-
-                TextInput:
-                    id: tp
-                    text: "1.5"
-                    hint_text: "TP %"
-                    input_filter: "float"
-                    multiline: False
-                    background_color: .075,.09,.12,1
-                    foreground_color: 1,1,1,1
-
-                TextInput:
-                    id: sl
-                    text: "2.0"
-                    hint_text: "SL %"
-                    input_filter: "float"
-                    multiline: False
-                    background_color: .075,.09,.12,1
-                    foreground_color: 1,1,1,1
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(55)
-                spacing: dp(8)
-
-                Button:
-                    text: "▶ Start Scanning"
-                    bold: True
-                    background_color: .08,.48,.75,1
-                    on_release: app.start_scanning()
-
-                Button:
-                    text: "■ Stop"
-                    bold: True
-                    background_color: .8,.42,.08,1
-                    on_release: app.stop_scanning()
-
-            Button:
-                text: "Close Position Now"
-                size_hint_y: None
-                height: dp(55)
-                bold: True
-                background_color: .78,.12,.14,1
-                on_release: app.close_position_manual()
-
-            Label:
-                text: "Live Log"
-                font_size: "15sp"
-                bold: True
-                size_hint_y: None
-                height: dp(30)
-
-            TextInput:
-                id: log
-                text: app.log_text
-                readonly: True
-                multiline: True
-                size_hint_y: None
-                height: dp(260)
-                background_color: .045,.055,.07,1
-                foreground_color: .75,.8,.86,1
-"""
+# ==========================================
+# 1. إدارة قاعدة البيانات SQLite (Recovery System)
+# ==========================================
+DB_FILE = "mexc_scalper.db"
 
 def init_db():
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-        c.execute("""CREATE TABLE IF NOT EXISTS active_position (
-            id INTEGER PRIMARY KEY, symbol TEXT, entry_price REAL, amount REAL,
-            tp_percent REAL, sl_percent REAL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS closed_trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL,
-            exit_price REAL, amount REAL, pnl_usd REAL, pnl_percent REAL,
-            reason TEXT, timestamp TEXT)""")
-        conn.commit()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS active_position (
+            id INTEGER PRIMARY KEY,
+            symbol TEXT,
+            buy_price REAL,
+            quantity REAL,
+            target_price REAL,
+            stop_loss_price REAL,
+            timestamp TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trade_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            buy_price REAL,
+            sell_price REAL,
+            quantity REAL,
+            pnl_percent REAL,
+            reason TEXT,
+            close_time TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-def save_setting(key, value):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, str(value)))
-        conn.commit()
-
-def get_setting(key, default=""):
-    with sqlite3.connect(DB_NAME) as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-        return row[0] if row else default
-
-def save_active_position(symbol, entry, amount, tp, sl):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("DELETE FROM active_position")
-        conn.execute("""INSERT INTO active_position
-            (id,symbol,entry_price,amount,tp_percent,sl_percent)
-            VALUES(1,?,?,?,?,?)""", (symbol,entry,amount,tp,sl))
-        conn.commit()
-
-def get_active_position():
-    with sqlite3.connect(DB_NAME) as conn:
-        row = conn.execute("""SELECT symbol,entry_price,amount,tp_percent,sl_percent
-                              FROM active_position WHERE id=1""").fetchone()
-        if not row:
-            return None
-        return {"symbol":row[0],"entry_price":row[1],"amount":row[2],
-                "tp_percent":row[3],"sl_percent":row[4]}
+def save_active_position(symbol, buy_price, quantity, target_price, stop_loss_price):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM active_position")
+    cursor.execute('''
+        INSERT INTO active_position (id, symbol, buy_price, quantity, target_price, stop_loss_price, timestamp)
+        VALUES (1, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+    ''', (symbol, buy_price, quantity, target_price, stop_loss_price))
+    conn.commit()
+    conn.close()
 
 def clear_active_position():
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("DELETE FROM active_position")
-        conn.commit()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM active_position")
+    conn.commit()
+    conn.close()
 
-def record_closed_trade(symbol, entry, exit_price, amount, pnl_usd, pnl_pct, reason):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("""INSERT INTO closed_trades
-            (symbol,entry_price,exit_price,amount,pnl_usd,pnl_percent,reason,timestamp)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (symbol,entry,exit_price,amount,pnl_usd,pnl_pct,reason,
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
+def get_active_position():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT symbol, buy_price, quantity, target_price, stop_loss_price FROM active_position WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    return row
 
-def safe_get(url, params=None, headers=None):
-    backoff = 0.5
-    for _ in range(3):
-        try:
-            r = requests.get(url, params=params, headers=headers, timeout=5)
-            if r.status_code == 429:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            if r.status_code == 200:
-                return r.json()
-        except Exception:
-            time.sleep(backoff)
-            backoff *= 2
+def log_trade_history(symbol, buy_price, sell_price, quantity, pnl_percent, reason):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO trade_history (symbol, buy_price, sell_price, quantity, pnl_percent, reason, close_time)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+    ''', (symbol, buy_price, sell_price, quantity, pnl_percent, reason))
+    conn.commit()
+    conn.close()
+
+# ==========================================
+# 2. وظائف التعامل مع MEXC API
+# ==========================================
+MEXC_API_KEY = "YOUR_MEXC_API_KEY"
+MEXC_SECRET_KEY = "YOUR_MEXC_SECRET_KEY"
+
+def get_mexc_real_price(symbol):
+    try:
+        formatted_symbol = symbol.replace("/", "").upper()
+        url = f"https://api.mexc.com/api/v3/ticker/price?symbol={formatted_symbol}"
+        response = requests.get(url, timeout=4)
+        if response.status_code == 200:
+            return float(response.json()['price'])
+        elif response.status_code == 429:
+            time.sleep(1)
+    except Exception as e:
+        print(f"خطأ في جلب السعر: {e}")
     return None
 
-def update_exchange_info():
-    global SYMBOL_RULES_CACHE
-    data = safe_get(BASE_URL + "/exchangeInfo")
-    if data and "symbols" in data:
-        for s in data["symbols"]:
-            SYMBOL_RULES_CACHE[s["symbol"]] = s.get("baseAssetPrecision", 4)
-
-def get_top_200_symbols():
-    data = safe_get(BASE_URL + "/ticker/24hr")
-    if isinstance(data, list):
-        pairs = [x for x in data if x.get("symbol","").endswith("USDT")]
-        pairs.sort(key=lambda x: float(x.get("quoteVolume",0)), reverse=True)
-        return [x["symbol"] for x in pairs[:200]]
-    return ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT"]
-
-def get_price(symbol):
-    data = safe_get(BASE_URL + "/ticker/price",
-                    {"symbol": symbol.replace("/","").upper()})
+def get_symbol_precision(symbol):
     try:
-        return float(data["price"])
-    except Exception:
-        return None
-
-def signed_request(method, path, params, api, secret):
-    params = dict(params)
-    params["timestamp"] = int(time.time()*1000)
-    params["recvWindow"] = 5000
-    qs = urlencode(params)
-    params["signature"] = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    headers = {"X-MEXC-APIKEY": api, "Content-Type":"application/json"}
-    if method == "POST":
-        return requests.post(BASE_URL+path, headers=headers, params=params, timeout=8)
-    return requests.get(BASE_URL+path, headers=headers, params=params, timeout=8)
-
-def buy_market(symbol, amount, api, secret):
-    if not api or not secret:
-        return False, "Enter API Key and Secret Key", 0
-    try:
-        r = signed_request("POST","/order",{
-            "symbol":symbol.replace("/","").upper(),
-            "side":"BUY","type":"MARKET","quoteOrderQty":f"{amount:.2f}"
-        },api,secret)
-        data = r.json()
-        if r.status_code == 200 and "orderId" in data:
-            time.sleep(.3)
-            p = get_price(symbol)
-            return True, "Buy executed: "+str(data["orderId"]), p or 0
-        return False, data.get("msg",str(data)), 0
-    except Exception as e:
-        return False, str(e), 0
-
-def free_balance(symbol, api, secret):
-    try:
-        asset = symbol.replace("USDT","").replace("/","").upper()
-        r = signed_request("GET","/account",{},api,secret)
-        if r.status_code == 200:
-            for b in r.json().get("balances",[]):
-                if b["asset"] == asset:
-                    return float(b["free"])
+        formatted_symbol = symbol.replace("/", "").upper()
+        url = "https://api.mexc.com/api/v3/exchangeInfo"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            for s in data.get('symbols', []):
+                if s['symbol'] == formatted_symbol:
+                    return int(s.get('baseAssetPrecision', 4))
     except Exception:
         pass
-    return 0
+    return 4
 
-def sell_market(symbol, api, secret):
+def get_klines_data(symbol, interval, limit=250):
     try:
-        qty = free_balance(symbol,api,secret)
-        if qty <= 0:
-            return True, "No balance available to sell"
-        precision = SYMBOL_RULES_CACHE.get(symbol.replace("/","").upper(), 4)
-        r = signed_request("POST","/order",{
-            "symbol":symbol.replace("/","").upper(),
-            "side":"SELL","type":"MARKET",
-            "quantity":f"{qty:.{precision}f}"
-        },api,secret)
-        data = r.json()
-        if r.status_code == 200 and "orderId" in data:
-            return True, "Sell executed"
-        return False, data.get("msg",str(data))
+        formatted_symbol = symbol.replace("/", "").upper()
+        url = f"https://api.mexc.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            df = pd.DataFrame(data, columns=[
+                'open_time', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
+            ])
+            df['close'] = df['close'].astype(float)
+            df['open'] = df['open'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            df['volume'] = df['volume'].astype(float)
+            return df
     except Exception as e:
-        return False, str(e)
+        print(f"خطأ في جلب الشموع لـ {symbol}: {e}")
+    return None
 
-def ema(data, period):
-    if len(data) < period:
-        return []
-    out=[sum(data[:period])/period]
-    m=2/(period+1)
-    for p in data[period:]:
-        out.append((p-out[-1])*m+out[-1])
-    return out
+def place_mexc_buy_order_market(symbol, usdt_amount):
+    price = get_mexc_real_price(symbol)
+    if price:
+        qty = usdt_amount / price
+        return True, price, qty
+    return False, 0, 0
 
-def ema_trend(symbol, interval):
-    key=(symbol,interval)
-    now=time.time()
-    if key in TREND_CACHE and now-TREND_CACHE[key][1] < CACHE_TTL:
-        return TREND_CACHE[key][0]
-    data=safe_get(BASE_URL+"/klines",{"symbol":symbol,"interval":interval,"limit":220})
-    if not isinstance(data,list) or len(data) < 200:
-        return False
-    closes=[float(k[4]) for k in data]
-    e=ema(closes,200)
-    result=bool(e) and closes[-2]>e[-2]
-    TREND_CACHE[key]=(result,now)
-    return result
+def place_mexc_sell_order_market(symbol, qty):
+    precision = get_symbol_precision(symbol)
+    factor = 10 ** precision
+    safe_qty = math.floor(qty * factor) / factor
+    
+    price = get_mexc_real_price(symbol)
+    if price:
+        return True, price, safe_qty
+    return False, 0, 0
 
-def check_conditions(symbol):
+# ==========================================
+# 3. تحليل الاستراتيجية (نفس المنطق الخوارزمي)
+# ==========================================
+def check_trade_conditions_from_main(symbol):
     try:
-        s=symbol.replace("/","").upper()
-        if not all(ema_trend(s,i) for i in ("5m","15m","60m")):
-            return False,0,"Overall trend is not bullish"
-        data=safe_get(BASE_URL+"/klines",{"symbol":s,"interval":"5m","limit":220})
-        if not isinstance(data, list) or len(data)<200:
-            return False,0,"Insufficient candle data"
-        c=[float(k[4]) for k in data]
-        v=[float(k[5]) for k in data]
-        h=[float(k[2]) for k in data]
-        l=[float(k[3]) for k in data]
+        df_5m = get_klines_data(symbol, "5m", limit=250)
+        df_15m = get_klines_data(symbol, "15m", limit=250)
+        df_60m = get_klines_data(symbol, "60m", limit=250)
 
-        e9,e21,e200=ema(c,9),ema(c,21),ema(c,200)
-        if not e9 or not e21 or not e200 or len(e9) < 3:
-            return False,0,"Indicator calculation error"
+        if df_5m is None or df_15m is None or df_60m is None:
+            return False, 0
 
-        cross=e9[-2]<=e21[-2] and e9[-1]>e21[-1]
-        aligned=e9[-1]>e21[-1]>e200[-1]
-        total=sum(v[-21:-1])
-        vwap=sum(((h[i]+l[i]+c[i])/3)*v[i] for i in range(-21,-1))/total if total else c[-1]
-        above=c[-1]>vwap
-        avg=sum(v[-101:-1])/100 if len(v) >= 101 else 1
-        high=v[-1] > avg*1.8
+        ema200_15m = ta.trend.ema_indicator(df_15m['close'], window=200).iloc[-1]
+        ema200_60m = ta.trend.ema_indicator(df_60m['close'], window=200).iloc[-1]
 
-        if cross and aligned and above and high:
-            return True,c[-1],"Confirmed entry conditions met"
-        return False,c[-1],"Conditions not met"
+        last_price_15m = df_15m['close'].iloc[-1]
+        last_price_60m = df_60m['close'].iloc[-1]
+
+        if not (last_price_15m > ema200_15m and last_price_60m > ema200_60m):
+            return False, 0
+
+        df_5m['ema9'] = ta.trend.ema_indicator(df_5m['close'], window=9)
+        df_5m['ema21'] = ta.trend.ema_indicator(df_5m['close'], window=21)
+        df_5m['ema200'] = ta.trend.ema_indicator(df_5m['close'], window=200)
+        df_5m['vwap'] = ta.volume.volume_weighted_average_price(
+            high=df_5m['high'], low=df_5m['low'], close=df_5m['close'], volume=df_5m['volume']
+        )
+        psar = ta.trend.PSARIndicator(high=df_5m['high'], low=df_5m['low'], close=df_5m['close'])
+        df_5m['psar'] = psar.psar()
+
+        current_idx = len(df_5m) - 1
+        prev_idx = current_idx - 1
+
+        ema9_vals = df_5m['ema9'].values
+        ema21_vals = df_5m['ema21'].values
+        ema200_vals = df_5m['ema200'].values
+        close_vals = df_5m['close'].values
+        vwap_vals = df_5m['vwap'].values
+        psar_vals = df_5m['psar'].values
+
+        cross_up = (ema9_vals[prev_idx] <= ema21_vals[prev_idx]) and (ema9_vals[current_idx] > ema21_vals[current_idx])
+        if not cross_up:
+            return False, 0
+
+        price_curr = close_vals[current_idx]
+        if price_curr > vwap_vals[current_idx] and psar_vals[current_idx] < price_curr and  (ema21_vals[current_idx] > ema200_vals[current_idx]):
+            return True, price_curr
+
     except Exception as e:
-        return False,0,str(e)
+        print(f"خطأ في تحليل الاستراتيجية لـ {symbol}: {e}")
 
-class MainScreen(Screen):
-    pass
+    return False, 0
 
-class MEXCMobileApp(App):
-    active_symbol=StringProperty("--")
-    pnl_text=StringProperty("$0.00 (0.00%)")
-    current_price_text=StringProperty("--")
-    log_text=StringProperty("")
-    running=False
-    position=None
-    scanner_thread=None
-    ticker_thread=None
-
+# ==========================================
+# 4. واجهة المستخدم والتطبيق للجوال (KivyMD)
+# ==========================================
+class MexcScalperMobileApp(MDApp):
     def build(self):
+        self.theme_cls.theme_style = "Dark"
+        self.theme_cls.primary_palette = "Blue"
+
         init_db()
-        root=Builder.load_string(KV)
-        Clock.schedule_once(lambda dt:self.load_settings(),0.2)
-        pos=get_active_position()
-        if pos:
-            self.position=pos
-            self.active_symbol=pos["symbol"]
-            self.log("Open position restored.")
-            self.start_ticker()
-        return root
 
-    def load_settings(self):
-        self.root.get_screen("main").ids.api.text=get_setting("api_key","")
-        self.root.get_screen("main").ids.secret.text=get_setting("secret_key","")
-        self.root.get_screen("main").ids.amount.text=get_setting("amount","109")
-        self.root.get_screen("main").ids.tp.text=get_setting("tp","1.5")
-        self.root.get_screen("main").ids.sl.text=get_setting("sl","2.0")
+        self.symbols = [
+            "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
+            "SHIB/USDT", "DOT/USDT", "LINK/USDT", "SUI/USDT", "NEAR/USDT", "PEPE/USDT", "LTC/USDT", "APT/USDT",
+            "UNI/USDT", "ICP/USDT", "FET/USDT", "RENDER/USDT", "ETC/USDT", "XLM/USDT", "STX/USDT", "INJ/USDT",
+            "TAO/USDT", "FIL/USDT", "TRX/USDT", "OKB/USDT", "OP/USDT", "ARB/USDT", "WIF/USDT", "FLOKI/USDT",
+            "TIA/USDT", "AAVE/USDT", "SEI/USDT", "GALA/USDT", "RUNE/USDT", "ENS/USDT", "BONK/USDT", "ATOM/USDT"
+        ]
 
-    def log(self,msg):
-        def add(dt):
-            self.log_text += ("\n" if self.log_text else "") + msg
-        Clock.schedule_once(add,0)
+        self.is_scanning = False
+        self.current_scan_index = 0
+        self.is_monitoring = False
 
-    def values(self):
-        ids=self.root.get_screen("main").ids
-        api=ids.api.text.strip()
-        secret=ids.secret.text.strip()
-        try:
-            amount=float(ids.amount.text)
-            tp=float(ids.tp.text)
-            sl=float(ids.sl.text)
-        except:
-            amount,tp,sl=109,1.5,2
-        return api,secret,amount,tp,sl
+        # عناصر الواجهة
+        screen = MDScreen()
+        layout = MDBoxLayout(orientation='vertical', padding=15, spacing=15)
 
-    def start_scanning(self):
-        api,secret,_,_,_=self.values()
-        if not api or not secret:
-            self.log("⚠️ Enter API keys first.")
+        self.status_label = MDLabel(
+            text="الحالة: جاهز للعمل",
+            halign="center",
+            font_style="Subtitle1",
+            size_hint_y=None,
+            height="40dp"
+        )
+        layout.add_widget(self.status_label)
+
+        # زر التحكم
+        btn_layout = MDBoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height="50dp")
+        self.start_btn = MDRaisedButton(text="بدء البحث", on_release=self.start_scanning)
+        self.stop_btn = MDRectangleFlatButton(text="إيقاف البحث", on_release=self.stop_scanning)
+        btn_layout.add_widget(self.start_btn)
+        btn_layout.add_widget(self.stop_btn)
+        layout.add_widget(btn_layout)
+
+        # بطاقة المعلومات
+        card = MDCard(padding=15, elevation=2)
+        scroll = MDScrollView()
+        self.info_label = MDLabel(
+            text="لا توجد صفقة مفتوحة حالياً.",
+            halign="left",
+            valign="top",
+            theme_text_color="Secondary"
+        )
+        scroll.add_widget(self.info_label)
+        card.add_widget(scroll)
+        layout.add_widget(card)
+
+        screen.add_widget(layout)
+
+        # التحقق من استعادة صفقات سابقة عند التشغيل
+        Clock.schedule_once(lambda dt: self.check_and_recover_position(), 1)
+
+        return screen
+
+    def start_scanning(self, instance):
+        if self.is_scanning or self.is_monitoring:
             return
-        with STATE_LOCK:
-            if self.running or self.position:
-                return
-            self.running=True
+        self.is_scanning = True
+        self.current_scan_index = 0
+        self.status_label.text = "الحالة: بدء عملية الفحص..."
+        Clock.schedule_interval(self.scan_step, 0.2)
 
-        self.save_inputs()
-        self.log("[START] Searching for an opportunity...")
+    def stop_scanning(self, instance):
+        if self.is_scanning:
+            self.is_scanning = False
+            Clock.unschedule(self.scan_step)
+            self.status_label.text = "الحالة: تم إيقاف الفحص."
 
-        def scan():
-            update_exchange_info()
-            symbols=get_top_200_symbols()
-            self.log(f"Scanning {len(symbols)} symbols...")
-            while True:
-                with STATE_LOCK:
-                    if not self.running:
-                        break
-                for sym in symbols:
-                    with STATE_LOCK:
-                        if not self.running:
-                            break
-                    ok,price,msg=check_conditions(sym)
-                    if ok:
-                        self.log(f"🎯 {sym} | ${price:.6f}")
-                        Clock.schedule_once(lambda dt,s=sym,p=price:self.execute_buy(s,p),0)
-                        with STATE_LOCK:
-                            self.running=False
-                        return
-                    time.sleep(0.15)
-                time.sleep(2)
+    def scan_step(self, dt):
+        if not self.is_scanning:
+            return False
 
-        self.scanner_thread=threading.Thread(target=scan,daemon=True)
-        self.scanner_thread.start()
+        if self.current_scan_index >= len(self.symbols):
+            self.status_label.text = "الحالة: إنهاء دورة الفحص كاملة بدون إشارة."
+            self.is_scanning = False
+            return False
 
-    def stop_scanning(self):
-        with STATE_LOCK:
-            self.running=False
-        self.log("[STOP] Scanning stopped.")
+        symbol = self.symbols[self.current_scan_index]
+        self.status_label.text = f"فحص [{self.current_scan_index + 1}/{len(self.symbols)}]: {symbol}"
+        
+        is_match, price = check_trade_conditions_from_main(symbol)
+        if is_match:
+            self.is_scanning = False
+            Clock.unschedule(self.scan_step)
+            self.execute_trade(symbol, price)
+            return False
 
-    def execute_buy(self,symbol,approx):
-        api,secret,amount,tp,sl=self.values()
-        self.log(f"[BUY] {symbol} with ${amount}...")
-        ok,msg,entry=buy_market(symbol,amount,api,secret)
-        if not ok or entry<=0:
-            self.log("[BUY FAILED] "+msg)
-            self.start_scanning()
-            return
+        self.current_scan_index += 1
 
-        with STATE_LOCK:
-            self.position={"symbol":symbol,"entry_price":entry,"amount":amount,
-                           "tp_percent":tp,"sl_percent":sl}
-        save_active_position(symbol,entry,amount,tp,sl)
-        self.active_symbol=symbol
-        self.log(f"[BUY SUCCESS] {symbol} | Entry ${entry:.6f}")
-        self.start_ticker()
+    def execute_trade(self, symbol, entry_price):
+        usdt_size = 10.0
+        success, buy_price, qty = place_mexc_buy_order_market(symbol, usdt_size)
+        if success:
+            target_price = buy_price * 1.015
+            stop_loss = buy_price * 0.99
+            save_active_position(symbol, buy_price, qty, target_price, stop_loss)
+            self.start_monitoring(symbol, buy_price, qty, target_price, stop_loss)
 
-    def start_ticker(self):
-        if self.ticker_thread and self.ticker_thread.is_alive():
-            return
-        self.ticker_thread=threading.Thread(target=self.ticker_loop,daemon=True)
-        self.ticker_thread.start()
+    def start_monitoring(self, symbol, buy_price, qty, target_price, stop_loss):
+        self.is_monitoring = True
+        self.status_label.text = f"تم الشراء في {symbol}! جاري المتابعة..."
+        Clock.schedule_interval(self.monitor_step, 2.0)
 
-    def ticker_loop(self):
-        while True:
-            with STATE_LOCK:
-                pos = self.position
-            if not pos:
-                break
+    def monitor_step(self, dt):
+        pos = get_active_position()
+        if not pos:
+            self.is_monitoring = False
+            return False
 
-            p=get_price(pos["symbol"])
-            if p and pos["entry_price"]>0:
-                pct=(p-pos["entry_price"])/pos["entry_price"]*100
-                usd=pos["amount"]*pct/100
-                Clock.schedule_once(lambda dt,p=p,u=usd,x=pct:self.update_pnl(p,u,x),0)
-                if pct>=pos["tp_percent"]:
-                    Clock.schedule_once(lambda dt:self.auto_close("TP"),0)
-                    return
-                if pct<=-pos["sl_percent"]:
-                    Clock.schedule_once(lambda dt:self.auto_close("SL"),0)
-                    return
-            time.sleep(1)
+        symbol, buy_price, qty, target_price, stop_loss = pos
+        curr_price = get_mexc_real_price(symbol)
 
-    def update_pnl(self,p,usd,pct):
-        self.current_price_text=f"${p:.6f}"
-        self.pnl_text=f"{'+' if usd>=0 else ''}${usd:.2f} ({'+' if pct>=0 else ''}{pct:.2f}%)"
+        if curr_price:
+            pnl = ((curr_price - buy_price) / buy_price) * 100
+            info = (
+                f"--- صفقة نشطة ---\n"
+                f"العملة: {symbol}\n"
+                f"سعر الدخول: {buy_price}\n"
+                f"السعر الحالي: {curr_price}\n"
+                f"الهدف (TP): {target_price}\n"
+                f"الاستوب (SL): {stop_loss}\n"
+                f"الربح/الخسارة الحالية: {pnl:.2f}%"
+            )
+            self.info_label.text = info
 
-    def auto_close(self,reason):
-        self.close_position(reason)
+            if curr_price >= target_price:
+                success, sell_price, _ = place_mexc_sell_order_market(symbol, qty)
+                if success:
+                    self.close_position(symbol, buy_price, sell_price, qty, pnl, "أخذ الأرباح (TP)")
+                    return False
+            elif curr_price <= stop_loss:
+                success, sell_price, _ = place_mexc_sell_order_market(symbol, qty)
+                if success:
+                    self.close_position(symbol, buy_price, sell_price, qty, pnl, "وقف الخسارة (SL)")
+                    return False
 
-    def close_position(self,reason="MANUAL"):
-        with STATE_LOCK:
-            pos=self.position
-            if not pos:
-                return
-            self.position=None
-
-        api,secret,_,_,_=self.values()
-        self.log(f"[CLOSE] {pos['symbol']} ({reason})...")
-        ok,msg=sell_market(pos["symbol"],api,secret)
-        exit_price=get_price(pos["symbol"]) or pos["entry_price"]
-        pct=(exit_price-pos["entry_price"])/pos["entry_price"]*100
-        usd=pos["amount"]*pct/100
-        record_closed_trade(pos["symbol"],pos["entry_price"],exit_price,pos["amount"],usd,pct,reason)
+    def close_position(self, symbol, buy_price, sell_price, qty, pnl, reason):
+        log_trade_history(symbol, buy_price, sell_price, qty, pnl, reason)
         clear_active_position()
+        self.is_monitoring = False
+        Clock.unschedule(self.monitor_step)
+        self.info_label.text = f"تم إغلاق الصفقة على {symbol}.\nالسبب: {reason}\nالربح النهائي: {pnl:.2f}%"
+        self.status_label.text = "جاهز للبحث عن صفقة جديدة..."
 
-        self.active_symbol="--"
-        self.current_price_text="--"
-        self.pnl_text="$0.00 (0.00%)"
-        self.log(("[CLOSED] " if ok else "[WARNING] ")+msg)
-        if reason!="MANUAL":
-            self.start_scanning()
+    def check_and_recover_position(self):
+        pos = get_active_position()
+        if pos:
+            symbol, buy_price, qty, target_price, stop_loss = pos
+            self.start_monitoring(symbol, buy_price, qty, target_price, stop_loss)
 
-    def close_position_manual(self):
-        self.close_position("MANUAL")
-
-    def save_inputs(self):
-        api,secret,amount,tp,sl=self.values()
-        save_setting("api_key",api)
-        save_setting("secret_key",secret)
-        save_setting("amount",amount)
-        save_setting("tp",tp)
-        save_setting("sl",sl)
-
-if __name__=="__main__":
-    MEXCMobileApp().run()
+if __name__ == '__main__':
+    MexcScalperMobileApp().run()
