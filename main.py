@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+"""
+MEXC Mobile Scalper — Full Fixed Version
+- VWAP + EMA cross strategy on 5m (trend filter: 5m/15m/1h)
+- Safe quantity-based selling (executedQty, LOT_SIZE rounding)
+- Fees accounted in TP/SL
+- Trade History screen with Win/Loss stats
+- Clear record + Clear history buttons
+"""
+
 import hashlib
 import hmac
 import os
@@ -5,43 +15,40 @@ import shutil
 import sqlite3
 import threading
 import time
-from datetime import datetime
+ datetime import datetime
 from urllib.parse import urlencode
 
 import requests
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.lang import Builder
-from kivy.properties import StringProperty
-from kivy.uix.screenmanager import Screen
+from kivy.properties import StringProperty, ColorProperty
+from kivy.uix.screenmanager import Screen, ScreenManager
 
 BASE_URL = "https://api.mexc.com/api/v3"
-SYMBOL_RULES_CACHE = {}
+SYMBOL_RULES_CACHE = {}   # symbol -> {"precision","step","minQty"}
 TREND_CACHE = {}
 CACHE_TTL = 300
 STATE_LOCK = threading.Lock()
+SCAN_LOCK = threading.Lock()
+FEE_RATE = 0.0007         # ~0.05% per side + safety margin
 
 
 def get_db_path():
-    """Use Android's writable app-data directory instead of the APK directory."""
     try:
         app = App.get_running_app()
         if app and app.user_data_dir:
             os.makedirs(app.user_data_dir, exist_ok=True)
-            return os.path.join(app.user_data_dir, "bot_data.db")
+            return os.path.join(app.user_dir, "bot_data.db")
     except Exception:
         pass
-
-    # Desktop fallback.
     base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "bot_data.db")
 
 
 def migrate_legacy_db():
-    """Copy an old local DB once, if one exists beside the source file."""
     target = get_db_path()
     legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
-
     try:
         if os.path.abspath(legacy) != os.path.abspath(target):
             if os.path.exists(legacy) and not os.path.exists(target):
@@ -55,6 +62,7 @@ KV = r"""
 
 ScreenManager:
     MainScreen:
+    HistoryScreen:
 
 <MainScreen>:
     name: "main"
@@ -62,7 +70,7 @@ ScreenManager:
         Color:
             rgba: .035,.04,.055,1
         Rectangle:
-            pos: self.pos
+            pos self.pos
             size: self.size
 
     ScrollView:
@@ -86,7 +94,6 @@ ScreenManager:
                     color: .15,.8,1,1
                     halign: "left"
                     text_size: self.size
-
                 Label:
                     text: "MOBILE SCALPER"
                     font_size: "12sp"
@@ -224,7 +231,6 @@ ScreenManager:
                     bold: True
                     background_color: .08,.48,.75,1
                     on_release: app.start_scanning()
-
                 Button:
                     text: "■ Stop"
                     bold: True
@@ -239,6 +245,22 @@ ScreenManager:
                 background_color: .78,.12,.14,1
                 on_release: app.close_position_manual()
 
+            Button:
+                text: "🗑 Clear Trade Record"
+                size_hint_y: None
+                height: dp(48)
+                bold: True
+                background_color: .25,.25,.3,1
+                on_release: app.clear_trade_record()
+
+            Button:
+                text: "📊 Trade History & Stats"
+                size_hint_y: None
+                height: dp(48)
+                bold: True
+                background_color: .1,.35,.5,1
+                on_release: app.open_history()
+
             Label:
                 text: "Live Log"
                 font_size: "15sp"
@@ -246,8 +268,7 @@ ScreenManager:
                 size_hint_y: None
                 height: dp(30)
 
-            TextInput:
-                id: log
+            TextInput                id: log
                 text: app.log_text
                 readonly: True
                 multiline: True
@@ -255,8 +276,122 @@ ScreenManager:
                 height: dp(260)
                 background_color: .045,.055,.07,1
                 foreground_color: .75,.8,.86,1
+
+
+<HistoryScreen>:
+    name: "history"
+    canvas.before:
+        Color:
+            rgba: .035,.04,.055,1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(12)
+        spacing: dp(10)
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(50)
+            spacing: dp(8)
+            Button:
+                text: "◀ Back"
+                size_hint_x: None
+                width: dp(90)
+                bold: True
+                background_color: .25,.25,.3,1
+                on_release: app.back_to_main()
+            Label:
+                text: "Trade History"
+                font_size: "20sp"
+                bold: True
+                color: .15,.8,1,1
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(110)
+            padding: dp(10)
+            spacing: dp(8)
+            canvas.before:
+                Color:
+                    rgba: .07,.085,.11,1
+                RoundedRectangle:
+                    pos: self.pos
+                    size: self.size
+                    radius: [dp(14)]
+            BoxLayout:
+                orientation: "vertical"
+                Label:
+                    text: "Total Trades"
+                    font_size: "10sp"
+                    color: .55,.6,.68,1
+                Label:
+                    text: app.stat_total
+                    font_size: "18sp"
+                    bold: True
+            BoxLayout:
+                orientation: "vertical"
+                Label:
+                    text: "Win Rate"
+                    font_size: "10sp"
+                    color: .55,.6,.68,1
+                Label:
+                    text: app.stat_winrate
+                    font_size: "18sp"
+                    bold: True
+                    color: app.winrate_color
+            BoxLayout:
+                orientation: "vertical"
+                Label:
+                    text: "Net PnL"
+                    font_size: "10sp"
+                    color: .55,.6,.68,1
+                Label:
+                    text: app.stat_pnl
+                    font_size: "18sp"
+                    bold: True
+                    color: app.stat_pnl_color
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            spacing: dp(6)
+            Label:
+                text: "Wins: " + app.stat_wins
+                bold: True
+                color: .3,.85,.45,1
+            Label:
+                text: "Losses: " + app.stat_losses
+                bold: True
+                color: .9,.35,.35,1
+
+        ScrollView:
+            do_scroll_x: False
+            bar_width: dp(3)
+            Label:
+                text: app.history_text
+                font_size: "12sp"
+                color: .75,.8,.86,1
+                halign: "left"
+                valign: "top"
+                text_size: self.width, None
+                size_hint_y: None
+                height: self.texture_size[1]
+                padding: [dp(6), dp(6)]
+
+        Button:
+            text: "🗑 Clear History"
+            size_hint_y: None
+            height: dp(44)
+            bold: True
+            background_color: .5,.15,.15,1
+            on_release: app.clear_history_from_screen()
 """
 
+
+# ---------------------------------------------------------------- DB
 
 def init_db():
     with sqlite3.connect(get_db_path()) as conn:
@@ -266,7 +401,7 @@ def init_db():
         )
         c.execute("""CREATE TABLE IF NOT EXISTS active_position (
             id INTEGER PRIMARY KEY, symbol TEXT, entry_price REAL, amount REAL,
-            tp_percent REAL, sl_percent REAL)""")
+            qty REAL, tp_percent REAL, sl_percent REAL)""")
         c.execute("""CREATE TABLE IF NOT EXISTS closed_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL,
             exit_price REAL, amount REAL, pnl_usd REAL, pnl_percent REAL,
@@ -291,22 +426,26 @@ def get_setting(key, default=""):
         return row[0] if row else default
 
 
-def save_active_position(symbol, entry, amount, tp, sl):
+def save_active_position(symbol, entry, amount, qty, tp, sl):
     with sqlite3.connect(get_db_path()) as conn:
         conn.execute("DELETE FROM active_position")
         conn.execute(
             """INSERT INTO active_position
-               (id,symbol,entry_price,amount,tp_percent,sl_percent)
-               VALUES(1,?,?,?,?,?)""",
-            (symbol, entry, amount, tp, sl),
+               (id,symbol,entry_price,amount,qty,tp_percent,sl_percent)
+               VALUES(1,?,?,?,?,?,?)""",
+            (symbol, entry, amount, qty, tp, sl),
         )
         conn.commit()
 
 
 def get_active_position():
     with sqlite3.connect(get_db_path()) as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(active_position)")]
+        if "qty" not in cols:
+            conn.execute("ALTER TABLE active_position ADD COLUMN qty REAL DEFAULT 0")
+            conn.commit()
         row = conn.execute(
-            """SELECT symbol,entry_price,amount,tp_percent,sl_percent
+            """SELECT symbol,entry_price,amount,qty,tp_percent,sl_percent
                FROM active_position WHERE id=1"""
         ).fetchone()
         if not row:
@@ -315,8 +454,9 @@ def get_active_position():
             "symbol": row[0],
             "entry_price": row[1],
             "amount": row[2],
-            "tp_percent": row[3],
-            "sl_percent": row[4],
+            "qty": row[3] or 0,
+            "tp_percent": row[4],
+            "sl_percent": row[5],
         }
 
 
@@ -326,33 +466,34 @@ def clear_active_position():
         conn.commit()
 
 
-def record_closed_trade(
-    symbol, entry, exit_price, amount, pnl_usd, pnl_pct, reason
-):
+def clear_closed_trades():
+    with sqlite3.connect(get_db_path()) as conn:
+        conn.execute("DELETE FROM closed_trades")
+        conn.commit()
+
+
+def record_closed_trade(symbol, entry, exit_price, amount, pnl_usd, pnl_pct, reason):
     with sqlite3.connect(get_db_path()) as conn:
         conn.execute(
             """INSERT INTO closed_trades
                (symbol,entry_price,exit_price,amount,pnl_usd,pnl_percent,reason,timestamp)
                VALUES(?,?,?,?,?,?,?,?)""",
             (
-                symbol,
-                entry,
-                exit_price,
-                amount,
-                pnl_usd,
-                pnl_pct,
-                reason,
+                symbol, entry, exit_price, amount,
+                pnl_usd, pnl_pct, reason,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
         conn.commit()
 
 
+# ---------------------------------------------------------------- API
+
 def safe_get(url, params=None, headers=None):
     backoff = 0.5
     for _ in range(3):
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=8)
+            r = requests.get(url, params=params, headers=headers, timeout=10)
             if r.status_code == 429:
                 time.sleep(backoff)
                 backoff *= 2
@@ -369,8 +510,35 @@ def update_exchange_info():
     global SYMBOL_RULES_CACHE
     data = safe_get(BASE_URL + "/exchangeInfo")
     if data and "symbols" in data:
+        rules = {}
         for s in data["symbols"]:
-            SYMBOL_RULES_CACHE[s["symbol"]] = s.get("baseAssetPrecision", 4)
+            step, min_qty = 0.0001, 0.0
+            for f in s.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    step = float(f.get("stepSize", 0.0001))
+                    min_qty = float(f.get("minQty", 0.0))
+            rules[s["symbol"]] = {
+                "precision": s.get("baseAssetPrecision", 4),
+                "step": step,
+                "minQty": min_qty,
+            }
+        SYMBOL_RULES_CACHE = rules
+
+
+def _round_qty(qty, symbol):
+    rule = SYMBOL_RULES_CACHE.get(symbol, {"step": 0.0001, "minQty": 0.0})
+    step = rule["step"] or 0.0001
+    qty = max(0.0, qty)
+    stepped = int(qty / step) * step
+    step_str = str(step)
+    decimals = 0
+    if "." in step_str:
+        trimmed = step_str.split(".")[-1].rstrip("0")
+        decimals = len(trimmed)
+ stepped = round(stepped, decimals)
+    if stepped < (rule["minQty"] or 0):
+        return 0.0
+    return stepped
 
 
 def get_top_200_symbols():
@@ -378,7 +546,9 @@ def get_top_200_symbols():
     if isinstance(data, list):
         pairs = [x for x in data if x.get("symbol", "").endswith("USDT")]
         pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-        return [x["symbol"] for x in pairs[:200]]
+        syms = [x["symbol"] for x in pairs[:200]]
+        if syms:
+            return syms
     return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
 
@@ -396,24 +566,21 @@ def get_price(symbol):
 def signed_request(method, path, params, api, secret):
     params = dict(params)
     params["timestamp"] = int(time.time() * 1000)
-    params["recvWindow"] = 5000
+    params["recvWindow"] = 10000
     qs = urlencode(params)
     params["signature"] = hmac.new(
         secret.encode(), qs.encode(), hashlib.sha256
     ).hexdigest()
     headers = {"X-MEXC-APIKEY": api, "Content-Type": "application/json"}
     if method == "POST":
-        return requests.post(
-            BASE_URL + path, headers=headers, params=params, timeout=8
-        )
-    return requests.get(
-        BASE_URL + path, headers=headers, params=params, timeout=8
-    )
+        return requests.post(BASE_URL + path, headers=headers, params=params, timeout=10)
+    return requests.get(BASE_URL + path, headers=headers, params=params, timeout=10)
 
 
 def buy_market(symbol, amount, api, secret):
+    """Buy market order. Returns (ok, msg, real_entry_price, executed_qty)."""
     if not api or not secret:
-        return False, "Please enter API Key and Secret Key", 0
+        return False, "Please enter API Key and Secret Key", 0, 0
     try:
         r = signed_request(
             "POST",
@@ -424,59 +591,56 @@ def buy_market(symbol, amount, api, secret):
                 "type": "MARKET",
                 "quoteOrderQty": f"{amount:.2f}",
             },
-            api,
-            secret,
+            api, secret,
         )
         data = r.json()
         if r.status_code == 200 and "orderId" in data:
-            time.sleep(0.3)
-            p = get_price(symbol)
-            return True, "Buy order executed: " + str(data["orderId"]), p or 0
-        return False, data.get("msg", str(data)), 0
+            entry, qty = 0.0, 0.0
+            try:
+                cq = float(data.get("cummulativeQuoteQty", 0))
+                qty = float(data.get("executedQty", 0))
+                if qty > 0:
+                    entry = cq / qty
+            except Exception:
+                pass
+            if entry <= 0:
+                time.sleep(0.3)
+                entry = get_price(symbol) or 0
+            if qty <= 0 and entry > 0:
+                qty = amount / entry
+            return True, "Buy executed: " + str(data["orderId"]), entry, qty
+        return False, data.get("msg", str(data)), 0, 0
     except Exception as e:
-        return False, str(e), 0
+        return False, str(e), 0, 0
 
 
-def free_balance(symbol, api, secret):
+def sell_qty_market(symbol, qty, api, secret):
+    """Sell ONLY the stored position quantity (LOT_SIZE rounded)."""
     try:
-        asset = symbol.replace("USDT", "").replace("/", "").upper()
-        r = signed_request("GET", "/account", {}, api, secret)
-        if r.status_code == 200:
-            for b in r.json().get("balances", []):
-                if b["asset"] == asset:
-                    return float(b["free"])
-    except Exception:
-        pass
-    return 0
-
-
-def sell_market(symbol, api, secret):
-    try:
-        qty = free_balance(symbol, api, secret)
+        symbol = symbol.replace("/", "").upper()
+        qty = _round_qty(qty, symbol)
         if qty <= 0:
-            return True, "No balance available to sell"
-        precision = SYMBOL_RULES_CACHE.get(
-            symbol.replace("/", "").upper(), 4
-        )
+            return False, "Quantity too small after LOT_SIZE rounding"
         r = signed_request(
             "POST",
             "/order",
             {
-                "symbol": symbol.replace("/", "").upper(),
+                "symbol": symbol,
                 "side": "SELL",
                 "type": "MARKET",
-                "quantity": f"{qty:.{precision}f}",
+                "quantity": f"{qty:g}",
             },
-            api,
-            secret,
+            api, secret,
         )
         data = r.json()
         if r.status_code == 200 and "orderId" in data:
-            return True, "Sell order executed"
+            return True, "Sell executed"
         return False, data.get("msg", str(data))
     except Exception as e:
         return False, str(e)
 
+
+# ---------------------------------------------------------------- Indicators
 
 def ema(data, period):
     if len(data) < period:
@@ -512,7 +676,8 @@ def check_conditions(symbol):
     try:
         s = symbol.replace("/", "").upper()
 
-        if not all(ema_trend(s, i) for i in ("5m", "15m", "60m")):
+        # Fixed: "1h" instead of invalid "60m"
+        if not all(ema_trend(s, i) for i in ("5m", "15m", "1h")):
             return False, 0, "Overall trend is not bullish"
 
         data = safe_get(
@@ -536,10 +701,8 @@ def check_conditions(symbol):
 
         total = sum(v[-21:-1])
         vwap = (
-            sum(((h[i] + l[i] + c[i]) / 3) * v[i] for i in range(-21, -1))
-            / total
-            if total
-            else c[-2]
+            sum(((h[i] + l[i] + c[i]) / 3) * v[i] for i in range(-21, -1)) / total
+            if total else c[-2]
         )
         above = c[-2] > vwap
 
@@ -554,15 +717,32 @@ def check_conditions(symbol):
         return False, 0, str(e)
 
 
+# ---------------------------------------------------------------- Screens
+
 class MainScreen(Screen):
     pass
 
+
+class HistoryScreen(Screen):
+    pass
+
+
+# ---------------------------------------------------------------- App
 
 class MEXCMobileApp(App):
     active_symbol = StringProperty("--")
     pnl_text = StringProperty("$0.00 (0.00%)")
     current_price_text = StringProperty("--")
     log_text = StringProperty("")
+
+    history_text = StringProperty("No closed trades yet.")
+    stat_total = StringProperty("0")
+    stat_wins = StringProperty("0")
+    stat_losses = StringProperty("0")
+    stat_winrate = StringProperty("0%")
+    stat_pnl = StringProperty("$0.00")
+    winrate_color = ColorProperty([.75, .75, .75, 1])
+    stat_pnl_color = ColorProperty([.75, .75, .75, 1])
 
     running = False
     position = None
@@ -572,22 +752,23 @@ class MEXCMobileApp(App):
     def build(self):
         migrate_legacy_db()
         init_db()
-
         root = Builder.load_string(KV)
         Clock.schedule_once(lambda dt: self.load_settings(), 0.2)
 
         pos = get_active_position()
-        if pos:
+        if pos and pos["qty"] > 0:
             self.position = pos
             self.active_symbol = pos["symbol"]
             self.log("Restored active position.")
             self.start_ticker()
+        elif pos:
+            clear_active_position()
 
         return root
 
     def load_settings(self):
         ids = self.root.get_screen("main").ids
-        ids.api.text = get_setting("api_key", "")
+        ids.api.text = get_setting("api_key "")
         ids.secret.text = get_setting("secret_key", "")
         ids.amount.text = get_setting("amount", "109")
         ids.tp.text = get_setting("tp", "1.5")
@@ -596,7 +777,6 @@ class MEXCMobileApp(App):
     def log(self, msg):
         def add(dt):
             self.log_text += ("\n" if self.log_text else "") + msg
-
         Clock.schedule_once(add, 0)
 
     def values(self):
@@ -611,6 +791,8 @@ class MEXCMobileApp(App):
             amount, tp, sl = 109, 1.5, 2
         return api, secret, amount, tp, sl
 
+    # ------------------------------------------------ Scanner
+
     def start_scanning(self):
         api, secret, _, _, _ = self.values()
         if not api or not secret:
@@ -622,39 +804,47 @@ class MEXCMobileApp(App):
                 return
             self.running = True
 
+        if not SCAN_LOCK.acquire(blocking=False):
+            with STATE_LOCK:
+                self.running = False
+            self.log("Scanner already running.")
+            return
+
         self.save_inputs()
         self.log("[START] Scanning for opportunities...")
 
         def scan():
-            update_exchange_info()
-            symbols = get_top_200_symbols()
-            self.log(f"Scanning {len(symbols)} coins...")
+            try:
+                update_exchange_info()
+                symbols = get_top_200_symbols()
+                self.log(f"Scanning {len(symbols)} coins...")
 
-            while True:
-                with STATE_LOCK:
-                    if not self.running:
-                        break
-
-                for sym in symbols:
+                while True:
                     with STATE_LOCK:
                         if not self.running:
                             break
 
-                    ok, price, msg = check_conditions(sym)
-
-                    if ok:
-                        self.log(f"🎯 {sym} | ${price:.6f}")
-                        Clock.schedule_once(
-                            lambda dt, s=sym, p=price: self.execute_buy(s, p),
-                            0,
-                        )
+                    for sym in symbols:
                         with STATE_LOCK:
-                            self.running = False
-                        return
+                            if not self.running:
+                                break
 
-                    time.sleep(0.15)
+                        ok, price, msg = check_conditions(sym)
 
-                time.sleep(2)
+                        if ok:
+                            self.log(f"🎯 {sym} | ${price:.6f}")
+                            Clock.schedule_once(
+                                lambda dt, s=sym, p=price: self.execute_buy(s, p), 0
+                            )
+                            with STATE_LOCK:
+                                self.running = False
+                            return
+
+                        time.sleep(0.15)
+
+                    time.sleep(2)
+            finally:
+                SCAN_LOCK.release()
 
         self.scanner_thread = threading.Thread(target=scan, daemon=True)
         self.scanner_thread.start()
@@ -664,14 +854,16 @@ class MEXCMobileApp(App):
             self.running = False
         self.log("[STOP] Scanning stopped.")
 
+    # ------------------------------------------------ Trade
+
     def execute_buy(self, symbol, approx):
         api, secret, amount, tp, sl = self.values()
         self.log(f"[BUY] {symbol} for ${amount}...")
 
-        ok, msg, entry = buy_market(symbol, amount, api, secret)
-        if not ok or entry <= 0:
+        ok, msg, entry, qty = buy_market(symbol, amount, api, secret)
+        if not ok or entry <= 0 or qty <= 0:
             self.log("[BUY FAILED] " + msg)
-            self.start_scanning()
+            Clock.schedule_once(lambda dt: self.start_scanning(), 1)
             return
 
         with STATE_LOCK:
@@ -679,21 +871,20 @@ class MEXCMobileApp(App):
                 "symbol": symbol,
                 "entry_price": entry,
                 "amount": amount,
+                "qty": qty,
                 "tp_percent": tp,
                 "sl_percent": sl,
             }
 
-        save_active_position(symbol, entry, amount, tp, sl)
+        save_active_position(symbol, entry, amount, qty, tp, sl)
         self.active_symbol = symbol
-        self.log(f"[BOUGHT] {symbol} | Entry ${entry:.6f}")
+        self.log(f"[BOUGHT] {symbol} | Entry ${entry:.6f} | Qty {qty}")
         self.start_ticker()
 
     def start_ticker(self):
         if self.ticker_thread and self.ticker_thread.is_alive():
             return
-        self.ticker_thread = threading.Thread(
-            target=self.ticker_loop, daemon=True
-        )
+        self.ticker_thread = threading.Thread(target=self.ticker_loop, daemon=True)
         self.ticker_thread.start()
 
     def ticker_loop(self):
@@ -710,20 +901,16 @@ class MEXCMobileApp(App):
                 usd = pos["amount"] * pct / 100
 
                 Clock.schedule_once(
-                    lambda dt, p=p, u=usd, x=pct: self.update_pnl(p, u, x),
-                    0,
+                    lambda dt, p=p, u=usd, x=pct: self.update_pnl(p, u, x), 0
                 )
 
-                if pct >= pos["tp_percent"]:
-                    Clock.schedule_once(
-                        lambda dt: self.auto_close("TP"), 0
-                    )
+                # Fees deducted from targets
+                if pct >= pos["tp_percent"] - FEE_RATE * 100:
+                    Clock.schedule_once(lambda dt: self.auto_close("TP"), 0)
                     return
 
-                if pct <= -pos["sl_percent"]:
-                    Clock.schedule_once(
-                        lambda dt: self.auto_close("SL"), 0
-                    )
+                if pct <= -(pos["sl_percent"] + FEE_RATE * 100):
+                    Clock.schedule_once(lambda dt: self.auto_close("SL"), 0)
                     return
 
             time.sleep(1)
@@ -748,39 +935,126 @@ class MEXCMobileApp(App):
         api, secret, _, _, _ = self.values()
         self.log(f"[CLOSING] {pos['symbol']} ({reason})...")
 
-        ok, msg = sell_market(pos["symbol"], api, secret)
+        ok, msg = sell_qty_market(pos["symbol"], pos.get("qty", 0), api, secret)
+
+        if not ok:
+            self.log("[SELL FAILED] " + msg)
+            self.log("Position kept active. Try again.")
+            with STATE_LOCK:
+                self.position = pos
+            return
+
         exit_price = get_price(pos["symbol"]) or pos["entry_price"]
-        pct = (
-            (exit_price - pos["entry_price"])
-            / pos["entry_price"]
-            * 100
-        )
+        pct = (exit_price - pos["entry_price"]) / pos["entry_price"] * 100
         usd = pos["amount"] * pct / 100
 
         record_closed_trade(
-            pos["symbol"],
-            pos["entry_price"],
-            exit_price,
-            pos["amount"],
-            usd,
-            pct,
-            reason,
+            pos["symbol"], pos["entry_price"], exit_price,
+            pos["amount"], usd, pct, reason,
         )
         clear_active_position()
+        self.refresh_history()
 
         self.active_symbol = "--"
         self.current_price_text = "--"
         self.pnl_text = "$0.00 (0.00%)"
 
-        self.log(
-            ("[CLOSED] " if ok else "[WARNING] ") + msg
-        )
+        self.log("[CLOSED] " + msg)
 
         if reason != "MANUAL":
-            self.start_scanning()
+            Clock.schedule_once(lambda dt: self.start_scanning(), 2)
 
     def close_position_manual(self):
         self.close_position("MANUAL")
+
+    # ------------------------------------------------ Clear record 🗑
+
+    def clear_trade_record(self):
+        """Clears the ACTIVE position record only (does NOT sell assets!)."""
+        had_pos = False
+        with STATE_LOCK:
+            if self.position:
+                had_pos = True
+                self.position = None
+
+        clear_active_position()
+        self.active_symbol = "--"
+        self.current_price_text = "--"
+        self.pnl_text = "$0.00 (0.00%)"
+
+        if had_pos:
+            self.log("🗑 Active position record cleared (assets NOT sold!).")
+        else:
+            self.log("🗑 No active position to clear.")
+
+    def clear_history_from_screen(self):
+        clear_closed_trades()
+        self.refresh_history()
+        self.log("🗑 Closed trade history cleared.")
+
+    # ------------------------------------------------ History 📊
+
+    def refresh_history(self):
+        with sqlite3.connect(get_db_path()) as conn:
+            rows = conn.execute(
+                """SELECT symbol, entry_price, exit_price, amount,
+                          pnl_usd, pnl_percent, reason, timestamp
+                   FROM closed_trades ORDER BY id DESC"""
+            ).fetchall()
+
+        if not rows:
+            self.history_text = "No closed trades yet."
+            self.stat_total = "0"
+            self.stat_wins = "0"
+            self.stat_losses = "0"
+            self.stat_winrate = "0%"
+            self.stat_pnl = "$0.00"
+            self.winrate_color = [.75, .75, .75, 1]
+            self.stat_pnl_color = [.75, .75, .75, 1]
+            return
+
+        lines = []
+        wins = losses = 0
+        total_pnl = 0.0
+
+        for (sym, entry, exit_, amount, usd, pct, reason, ts) in rows:
+            total_pnl += usd
+            if usd >= 0:
+                wins += 1
+                icon = "🟢"
+            else:
+                losses += 1
+                icon = "🔴"
+            lines.append(
+                f"{icon} {sym} [{reason}]\n"
+                f"   {ts} | Entry {entry:.6f} -> Exit {exit_:.6f}\n"
+                f"   PnL: {'+' if usd >= 0 else ''}${usd:.f} "
+                f"({'+' if pct >= 0 else ''}{pct:.2f}%) | ${amount:.0f}\n"
+            )
+
+        total = wins + losses
+        winrate = wins / total * 100 if total else 0
+
+        self.history_text = "\n".join(lines)
+        self.stat_total = str(total)
+        self.stat_wins = str(wins)
+        self.stat_losses = str(losses)
+        self.stat_winrate = f"{winrate:.1f}%"
+        self.stat_pnl = f"{'+' if total_pnl >= 0 else ''}${total_pnl:.2f}"
+
+        self.winrate_color = (
+            [.3, .85, .45, 1] if winrate >= 50 else [.9, .35, .35, 1]
+        )
+        self.stat_pnl_color = (
+            [.3, .85, .45, 1] if total_pnl >= 0 else [.9, .35, .35, 1]
+        )
+
+    def open_history(self):
+        self.refresh_history()
+        self.root.current = "history"
+
+    def back_to_main(self):
+        self.root.current = "main"
 
     def save_inputs(self):
         api, secret, amount, tp, sl = self.values()
