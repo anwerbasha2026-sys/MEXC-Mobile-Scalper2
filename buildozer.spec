@@ -14,7 +14,7 @@ requirements = python3,kivy==2.3.1,requests==2.32.5
 orientation = portrait
 fullscreen = 0
 
-android.permissions = INTERNET,ACCESS_NETWORK_STATE
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION
 
 # Android 12 / ONN 100071481A
 android.api = 33
