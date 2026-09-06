@@ -429,13 +429,13 @@ def check_conditions(symbol):
         if not e9 or not e21 or not e200 or len(e9) < 3:
             return False,0,"Indicator calculation error"
 
-        cross=e9[-3]<=e21[-3] and e9[-2]>e21[-2]
-        aligned=e9[-2]>e21[-2]>e200[-2]
+        cross=e9[-2]<=e21[-2] and e9[-1]>e21[-1]
+        aligned=e9[-1]>e21[-1]>e200[-1]
         total=sum(v[-21:-1])
-        vwap=sum(((h[i]+l[i]+c[i])/3)*v[i] for i in range(-21,-1))/total if total else c[-2]
-        above=c[-2]>vwap
-        avg=sum(v[-101:-2])/100 if len(v) >= 101 else 1
-        high=v[-2] > avg*1.8
+        vwap=sum(((h[i]+l[i]+c[i])/3)*v[i] for i in range(-21,-1))/total if total else c[-1]
+        above=c[-1]>vwap
+        avg=sum(v[-101:-1])/100 if len(v) >= 101 else 1
+        high=v[-1] > avg*1.8
 
         if cross and aligned and above and high:
             return True,c[-1],"Confirmed entry conditions met"
