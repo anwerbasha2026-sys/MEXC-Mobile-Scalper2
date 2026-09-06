@@ -706,8 +706,8 @@ def check_conditions(symbol):
         )
         above = c[-2] > vwap
 
-        avg = sum(v[-101:-2]) / 99 if len(v) >= 101 else 1
-        high = v[-2] > avg * 1.8
+        avg = sum(v[-101:-1]) / 100 if len(v) >= 101 else 1
+        high = v[-1] > avg * 1.8
 
         if cross and aligned and above and high:
             return True, c[-1], "Confirmed entry strategy conditions met"
