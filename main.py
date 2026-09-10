@@ -388,7 +388,11 @@ class MEXCScalperMobile(App):
             self.set_pnl("PnL: --")
             self.set_buttons(start=False, stop=False, close=True)
             self.set_status("Status: Position Open")
-            self.write_log(f"[BUY OK] {msg} | Entry: {entry:.8f}")
+            self.write_log(f"[BUY OK] {msg}")
+            self.write_log(
+                f"[BUY VERIFIED] {symbol} actual average fill = {entry:.12f} | "
+                f"signal price = {float(price):.12f} | deviation = {((entry - float(price)) / float(price) * 100.0) if price else 0.0:.3f}%"
+            )
             self.start_monitor(symbol, entry, amount, tp, sl)
         except Exception as exc:
             self.write_log(f"[BUY ERROR] {type(exc).__name__}: {exc}")

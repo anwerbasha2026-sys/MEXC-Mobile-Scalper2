@@ -664,9 +664,16 @@ def query_mexc_order(symbol, order_id, api_key, secret_key):
 
 
 def _average_fill_price(order_data):
+    """Return the ACTUAL average execution price only.
+
+    Important: for MARKET orders, the API `price` field is not treated as an
+    execution price fallback. We only trust avgPrice/filled quantities/fills.
+    """
     if not isinstance(order_data, dict):
         return None
-    for key in ("avgPrice", "averagePrice", "price"):
+
+    # Prefer explicit average execution fields.
+    for key in ("avgPrice", "averagePrice", "dealAvgPrice"):
         value = order_data.get(key)
         try:
             if value is not None and float(value) > 0:
@@ -674,8 +681,14 @@ def _average_fill_price(order_data):
         except (TypeError, ValueError):
             pass
 
+    # Calculate from actual executed base quantity and actual quote spent.
     executed_qty = order_data.get("executedQty") or order_data.get("executedQuantity")
-    quote_qty = order_data.get("cummulativeQuoteQty") or order_data.get("cumQuoteQty") or order_data.get("executedQuoteQty")
+    quote_qty = (
+        order_data.get("cummulativeQuoteQty")
+        or order_data.get("cumQuoteQty")
+        or order_data.get("executedQuoteQty")
+        or order_data.get("cumulativeAmount")
+    )
     try:
         if executed_qty and quote_qty and float(executed_qty) > 0:
             return float(quote_qty) / float(executed_qty)
@@ -690,13 +703,54 @@ def _average_fill_price(order_data):
             try:
                 price = Decimal(str(fill.get("price")))
                 qty = Decimal(str(fill.get("qty") or fill.get("quantity")))
-                total_qty += qty
-                total_quote += price * qty
+                if price > 0 and qty > 0:
+                    total_qty += qty
+                    total_quote += price * qty
             except Exception:
                 continue
         if total_qty > 0:
             return float(total_quote / total_qty)
+
     return None
+
+
+def _order_status(order_data):
+    if not isinstance(order_data, dict):
+        return ""
+    return str(order_data.get("status") or order_data.get("state") or "").upper()
+
+
+def _executed_quantity(order_data):
+    if not isinstance(order_data, dict):
+        return Decimal("0")
+    for key in ("executedQty", "executedQuantity", "dealQuantity"):
+        try:
+            value = order_data.get(key)
+            if value is not None:
+                return Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            pass
+    return Decimal("0")
+
+
+def _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=4.0):
+    """Poll the order until MEXC reports a terminal state or a real fill."""
+    deadline = time.monotonic() + timeout_seconds
+    last = None
+    while time.monotonic() < deadline:
+        last = query_mexc_order(symbol, order_id, api_key, secret_key)
+        if isinstance(last, dict):
+            status = _order_status(last)
+            executed = _executed_quantity(last)
+            # Any real execution is enough to establish that the order traded.
+            if executed > 0:
+                return last
+            if status in {"CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}:
+                return last
+            if status in {"FILLED", "PARTIALLY_FILLED"} and executed >= 0:
+                return last
+        time.sleep(0.35)
+    return last
 
 
 def _extract_order_id(payload):
@@ -747,9 +801,24 @@ def place_mexc_buy_order(symbol, amount_usd, api_key, secret_key):
             return False, _api_error_message(response), 0.0
 
         order_id = _extract_order_id(res_data)
-        order_details = query_mexc_order(symbol, order_id, api_key, secret_key)
-        fill_price = _average_fill_price(order_details) or get_mexc_real_price(symbol) or 0.0
-        return True, f"Order ID: {order_id}", float(fill_price)
+        order_details = _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=4.0)
+        if not isinstance(order_details, dict):
+            return False, f"BUY order {order_id} was accepted but its execution could not be verified. Check MEXC Order History before retrying.", 0.0
+
+        status = _order_status(order_details)
+        executed_qty = _executed_quantity(order_details)
+        fill_price = _average_fill_price(order_details)
+
+        if executed_qty <= 0 or not fill_price or fill_price <= 0:
+            return False, (
+                f"BUY order {order_id} was not verified as executed (status={status or 'UNKNOWN'}, "
+                f"executedQty={executed_qty}). Check MEXC before retrying."
+            ), 0.0
+
+        return True, (
+            f"Order ID: {order_id} | Status: {status or 'UNKNOWN'} | "
+            f"Executed Qty: {executed_qty} | Actual Avg Fill: {fill_price:.12f}"
+        ), float(fill_price)
 
     except requests.RequestException as e:
         return False, f"Network error while placing BUY. Verify the order on MEXC before retrying: {e}", 0.0
@@ -795,9 +864,23 @@ def place_mexc_sell_order_market(symbol, api_key, secret_key):
         if response.status_code != 200 or not order_id:
             return False, f"Exchange rejected: {_api_error_message(response)}", 0.0
 
-        order_details = query_mexc_order(symbol, order_id, api_key, secret_key)
-        exit_price = _average_fill_price(order_details) or get_mexc_real_price(symbol) or 0.0
-        return True, f"Sell order executed successfully | Order ID: {order_id}", float(exit_price)
+        order_details = _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=4.0)
+        if not isinstance(order_details, dict):
+            return False, f"SELL order {order_id} accepted but execution could not be verified. Check MEXC before retrying.", 0.0
+
+        status = _order_status(order_details)
+        executed_qty = _executed_quantity(order_details)
+        exit_price = _average_fill_price(order_details)
+        if executed_qty <= 0 or not exit_price or exit_price <= 0:
+            return False, (
+                f"SELL order {order_id} was not verified as executed (status={status or 'UNKNOWN'}, "
+                f"executedQty={executed_qty}). Check MEXC before retrying."
+            ), 0.0
+
+        return True, (
+            f"Sell order executed successfully | Order ID: {order_id} | Status: {status or 'UNKNOWN'} | "
+            f"Executed Qty: {executed_qty} | Actual Avg Fill: {exit_price:.12f}"
+        ), float(exit_price)
 
     except requests.RequestException as e:
         return False, f"Network error while placing SELL. Verify the order on MEXC before retrying: {e}", 0.0
