@@ -30,6 +30,8 @@ from mexc_core import (
     record_closed_trade,
     save_setting,
     get_setting,
+    save_api_credentials,
+    get_api_credentials,
     get_symbol_rules,
 )
 
@@ -278,11 +280,19 @@ class MEXCScalperMobile(App):
             save_setting("tp", self.tp.text.strip())
             save_setting("sl", self.sl.text.strip())
             save_setting("paper", "1" if self.paper.active else "0")
+            save_api_credentials(
+                self.api_key.text.strip(),
+                self.secret_key.text.strip(),
+            )
+            self.write_log("[SETTINGS] API credentials and trading settings saved to database.")
         except Exception as exc:
             self.write_log(f"[SETTINGS] Save failed: {exc}")
 
     def load_settings(self):
         try:
+            saved_api, saved_secret = get_api_credentials()
+            self.api_key.text = saved_api
+            self.secret_key.text = saved_secret
             self.amount.text = get_setting("amount", "79")
             self.tp.text = get_setting("tp", "1.5")
             self.sl.text = get_setting("sl", "2.0")
@@ -362,8 +372,13 @@ class MEXCScalperMobile(App):
             if self.paper.active:
                 ok, msg, fill = True, "Paper order", price
             else:
+                api_key, secret_key = get_api_credentials()
+                if not api_key or not secret_key:
+                    api_key = self.api_key.text.strip()
+                    secret_key = self.secret_key.text.strip()
+                    save_api_credentials(api_key, secret_key)
                 ok, msg, fill = place_mexc_buy_order(
-                    symbol, amount, self.api_key.text.strip(), self.secret_key.text.strip()
+                    symbol, amount, api_key, secret_key
                 )
 
             if not ok:
@@ -446,8 +461,13 @@ class MEXCScalperMobile(App):
                 exit_price = self.last_price or get_mexc_real_price(pos["symbol"]) or float(pos["entry_price"])
                 ok, msg = True, "Paper position closed"
             else:
+                api_key, secret_key = get_api_credentials()
+                if not api_key or not secret_key:
+                    api_key = self.api_key.text.strip()
+                    secret_key = self.secret_key.text.strip()
+                    save_api_credentials(api_key, secret_key)
                 ok, msg, exit_price = place_mexc_sell_order_market(
-                    pos["symbol"], self.api_key.text.strip(), self.secret_key.text.strip()
+                    pos["symbol"], api_key, secret_key
                 )
 
             if ok:
@@ -463,9 +483,12 @@ class MEXCScalperMobile(App):
                 clear_active_position()
                 self.set_position("Position: None")
                 self.set_pnl(f"PnL: ${pnl_usd:.4f} ({pnl_pct:.3f}%)")
-                self.set_buttons(start=True, stop=False, close=False)
-                self.set_status("Status: Ready")
+                self.set_buttons(start=False, stop=False, close=False)
+                self.set_status("Status: Position Closed - Searching for next trade...")
                 self.write_log(f"[SELL OK] {msg} | Exit: {exit_price:.8f} | PnL: ${pnl_usd:.4f} ({pnl_pct:.3f}%)")
+                # Automatically start a fresh Top-200 scan after the position is fully closed.
+                self.stop_event = threading.Event()
+                Clock.schedule_once(lambda _dt: self.start_scan(), 0.8)
             else:
                 self.write_log(f"[SELL FAILED] {msg}")
                 self.set_status("Status: Position still open - retry required")
@@ -506,8 +529,10 @@ class MEXCScalperMobile(App):
             return
         if not self.get_position_safe():
             self.close_btn.disabled = True
-            self.start_btn.disabled = False
-            self.status.text = "Status: Ready"
+            # A successful close schedules the next scan from close_position().
+            # Do not start a competing scanner here.
+            if not (self.scanner and self.scanner.is_alive()):
+                self.start_btn.disabled = False
 
     def on_stop(self):
         self.closing = True
