@@ -143,6 +143,20 @@ def get_setting(key, default=""):
             conn.close()
 
 
+def save_api_credentials(api_key, secret_key):
+    """Persist MEXC API credentials in the local SQLite settings database."""
+    save_setting("mexc_api_key", api_key.strip())
+    save_setting("mexc_secret_key", secret_key.strip())
+
+
+def get_api_credentials():
+    """Return saved MEXC API credentials from the local SQLite database."""
+    return (
+        get_setting("mexc_api_key", ""),
+        get_setting("mexc_secret_key", ""),
+    )
+
+
 def save_active_position(symbol, entry_price, amount, tp_percent, sl_percent):
     with _db_lock:
         conn = _get_db()
