@@ -142,7 +142,7 @@ class MEXCScalperMobile(App):
 
         self.root_layout = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
 
-        title = Label(text="[b]MEXC Mobile Scalper[/b]", markup=True, size_hint_y=None, height=dp(42), font_size="20sp")
+        title = Label(text="[b]MEXC Mobile Scalper PRO2[/b]", markup=True, size_hint_y=None, height=dp(42), font_size="20sp")
         self.root_layout.add_widget(title)
 
         scroll = ScrollView(size_hint_y=1)
