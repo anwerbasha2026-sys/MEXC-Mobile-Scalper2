@@ -1073,7 +1073,7 @@ def check_trade_conditions_from_main(symbol):
         vwap = tp_vol / total_vol if total_vol > 0 else last_closed_price
 
         avg_vol = sum(volumes[-100:-1]) / 99
-        is_volume_high = volumes[-1] > (avg_vol * 1.8)
+        is_volume_high = volumes[-1] > (avg_vol * 1.5)
 
         # شروط التأكيد الإضافية باستخدام RSI و MACD
         # مثال: RSI أعلى من 50 وأقل من 70 (لتجنب الشراء مفرط الارتفاع)، و MACD أعلى من Signal Line
@@ -1085,9 +1085,9 @@ def check_trade_conditions_from_main(symbol):
             and ema9_now > ema21_now
             and ema21_now > ema200_now
             #and last_closed_price > vwap
-            #and is_volume_high
+            and is_volume_high
             and is_rsi_bullish
-            and is_macd_bullish
+            #and is_macd_bullish
         ):
             return True, last_closed_price, "Signal conditions confirmed on closed candle with RSI & MACD"
 
