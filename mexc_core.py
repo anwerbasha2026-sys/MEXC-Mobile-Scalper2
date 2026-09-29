@@ -1077,14 +1077,14 @@ def check_trade_conditions_from_main(symbol):
 
         # شروط التأكيد الإضافية باستخدام RSI و MACD
         # مثال: RSI أعلى من 50 وأقل من 70 (لتجنب الشراء مفرط الارتفاع)، و MACD أعلى من Signal Line
-        is_rsi_bullish = 40 < rsi_now < 60
+        is_rsi_bullish = 30 < rsi_now < 60
         is_macd_bullish = macd_now > signal_now and hist_now > 0
 
         if (
             has_recent_crossover
             and ema9_now > ema21_now
             and ema21_now > ema200_now
-            #and last_closed_price > vwap
+            and last_closed_price > vwap
             and is_volume_high
             and is_rsi_bullish
             #and is_macd_bullish
