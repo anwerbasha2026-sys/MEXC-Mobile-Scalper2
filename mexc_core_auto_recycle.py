@@ -1002,16 +1002,16 @@ def check_trade_conditions_from_main(symbol):
     try:
         formatted_symbol = symbol.replace("/", "").upper()
 
-        #if not check_ema200_trend(formatted_symbol, "5m"):
-        #   return False, 0.0, "5m trend not bullish"
+        if not check_ema200_trend(formatted_symbol, "5m"):
+           return False, 0.0, "5m trend not bullish"
 
-        #if not check_ema200_trend(formatted_symbol, "15m"):
-        #   return False, 0.0, "15m trend not bullish"
+        if not check_ema200_trend(formatted_symbol, "15m"):
+            return False, 0.0, "15m trend not bullish"
 
         if not check_ema200_trend(formatted_symbol, "60m"):
             return False, 0.0, "60m trend not bullish"
 
-        klines = _get_klines(formatted_symbol, "60m", 500)
+        klines = _get_klines(formatted_symbol, "5m", 500)
         if not klines or len(klines) < 201:
             return False, 0.0, "Insufficient kline data"
 
@@ -1086,7 +1086,7 @@ def check_trade_conditions_from_main(symbol):
             and ema21_now > ema200_now
             and last_closed_price > vwap
             and is_volume_high
-            and is_rsi_bullish
+            #and is_rsi_bullish
             #and is_macd_bullish
         ):
             return True, last_closed_price, "Signal conditions confirmed on closed candle with RSI & MACD"
