@@ -1002,16 +1002,16 @@ def check_trade_conditions_from_main(symbol):
     try:
         formatted_symbol = symbol.replace("/", "").upper()
 
-        if not check_ema200_trend(formatted_symbol, "5m"):
-            return False, 0.0, "5m trend not bullish"
+        #if not check_ema200_trend(formatted_symbol, "5m"):
+        #   return False, 0.0, "5m trend not bullish"
 
-        if not check_ema200_trend(formatted_symbol, "15m"):
-            return False, 0.0, "15m trend not bullish"
+        #if not check_ema200_trend(formatted_symbol, "15m"):
+        #    return False, 0.0, "15m trend not bullish"
 
         if not check_ema200_trend(formatted_symbol, "60m"):
             return False, 0.0, "60m trend not bullish"
 
-        klines = _get_klines(formatted_symbol, "5m", 500)
+        klines = _get_klines(formatted_symbol, "60m", 500)
         if not klines or len(klines) < 201:
             return False, 0.0, "Insufficient kline data"
 
@@ -1042,7 +1042,7 @@ def check_trade_conditions_from_main(symbol):
         hist_now = histogram[-1]
 
         has_recent_crossover = False
-        for offset in range(1, 4):
+        for offset in range(1, 2):
             idx = len(closes) - offset
             prev_idx = idx - 1
 
