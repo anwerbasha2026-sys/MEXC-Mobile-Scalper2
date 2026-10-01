@@ -1111,7 +1111,7 @@ def check_trade_conditions_from_main(symbol):
         formatted_symbol = symbol.replace("/", "").upper()
 
         if not check_ema200_trend(formatted_symbol, "5m"):
-           return False, 0.0, "5m trend not bullish"
+           return False, 0.0, "5m trend not bullish1111"
 
         if not check_ema200_trend(formatted_symbol, "15m"):
             return False, 0.0, "15m trend not bullish"
