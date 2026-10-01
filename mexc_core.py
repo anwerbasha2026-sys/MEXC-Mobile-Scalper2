@@ -461,12 +461,20 @@ def get_symbol_rules(symbol, force=False):
             min_qty = _extract_min_qty(info)
             min_notional = _extract_min_notional(info)
             status = str(info.get("status", info.get("state", ""))).upper()
+            # Keep the complete symbol capabilities.  MEXC can expose
+            # symbols which exist in exchangeInfo but are not currently
+            # tradable on Spot, and some symbols have different order rules.
             local[name] = {
                 "symbol": name,
                 "step": step or Decimal("0"),
                 "min_qty": min_qty,
                 "min_notional": min_notional,
                 "status": status,
+                "spot_allowed": info.get("isSpotTradingAllowed"),
+                "margin_allowed": info.get("isMarginTradingAllowed"),
+                "quote_order_qty_allowed": info.get("quoteOrderQtyMarketAllowed"),
+                "base_asset": info.get("baseAsset"),
+                "quote_asset": info.get("quoteAsset"),
                 "raw": info,
             }
 
@@ -734,7 +742,12 @@ def _executed_quantity(order_data):
     return Decimal("0")
 
 
-def _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=4.0):
+def _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=8.0):
+    """Wait until MEXC gives a terminal/filled result for an order.
+
+    Do not treat an order as successful merely because POST /order returned
+    an orderId.  The orderId only means MEXC accepted the order request.
+    """
     deadline = time.monotonic() + timeout_seconds
     last = None
     while time.monotonic() < deadline:
@@ -742,12 +755,13 @@ def _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_second
         if isinstance(last, dict):
             status = _order_status(last)
             executed = _executed_quantity(last)
-            if executed > 0:
+
+            if status in {"FILLED", "PARTIALLY_FILLED"} and executed > 0:
                 return last
+
             if status in {"CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}:
                 return last
-            if status in {"FILLED", "PARTIALLY_FILLED"} and executed >= 0:
-                return last
+
         time.sleep(0.35)
     return last
 
@@ -759,25 +773,77 @@ def _extract_order_id(payload):
 
 
 def place_mexc_buy_order(symbol, amount_usd, api_key, secret_key):
+    """Place and VERIFY a real Spot MARKET BUY.
+
+    The function returns success only when Query Order confirms that MEXC
+    actually executed a positive quantity.  This prevents the mobile app
+    from creating a local position for an order that was only accepted,
+    rejected, expired, or never filled.
+    """
     if not api_key or not secret_key:
         return False, "API Key / Secret Key missing", 0.0
+
+    formatted = symbol.replace("/", "").upper()
 
     try:
         amount = Decimal(str(amount_usd))
         if amount <= 0:
             return False, "Trade amount must be greater than zero", 0.0
-        rules = get_symbol_rules(symbol)
-        if rules:
-            min_notional = rules.get("min_notional") or Decimal("0")
-            if min_notional > 0 and amount < min_notional:
-                return False, f"Trade amount {amount} is below minimum notional {min_notional} for {symbol}", 0.0
 
+        rules = get_symbol_rules(formatted)
+        if not rules:
+            return False, f"Could not load MEXC trading rules for {formatted}. BUY blocked for safety.", 0.0
+
+        # Never send an order for a symbol that exchangeInfo says is not
+        # currently available for Spot trading.
+        spot_allowed = rules.get("spot_allowed")
+        if spot_allowed is False:
+            return False, f"{formatted} is not currently allowed for Spot trading by MEXC.", 0.0
+
+        status = str(rules.get("status") or "").upper()
+        if status and status not in {"1", "TRADING", "ENABLED", "ONLINE"}:
+            return False, f"{formatted} is not in a tradable status ({status}).", 0.0
+
+        min_notional = rules.get("min_notional") or Decimal("0")
+        if min_notional > 0 and amount < min_notional:
+            return False, (
+                f"Trade amount {amount} is below minimum notional "
+                f"{min_notional} for {formatted}"
+            ), 0.0
+
+        quote_allowed = rules.get("quote_order_qty_allowed")
+
+        # MEXC documents quoteOrderQty for MARKET BUY.  If exchangeInfo
+        # explicitly disables it for a particular symbol, calculate a base
+        # quantity instead.  We only use the fallback after a fresh market
+        # price is available; we never guess a quantity.
+        use_quote = quote_allowed is not False
+        current_price = None
         params = {
-            "symbol": symbol.replace("/", "").upper(),
+            "symbol": formatted,
             "side": "BUY",
             "type": "MARKET",
-            "quoteOrderQty": _decimal_to_string(amount),
         }
+
+        if use_quote:
+            params["quoteOrderQty"] = _decimal_to_string(amount)
+        else:
+            current_price = get_mexc_real_price(formatted)
+            if not current_price or current_price <= 0:
+                return False, (
+                    f"{formatted} does not allow quoteOrderQty and its current "
+                    "market price could not be read. BUY blocked."
+                ), 0.0
+
+            raw_qty = amount / Decimal(str(current_price))
+            quantity, qty_error = normalize_order_quantity(
+                formatted, raw_qty, price=current_price
+            )
+            if qty_error:
+                return False, qty_error, 0.0
+            if quantity <= 0:
+                return False, f"Calculated BUY quantity is zero for {formatted}.", 0.0
+            params["quantity"] = _decimal_to_string(quantity)
 
         response = _signed_request(
             "POST", "/order", api_key, secret_key,
@@ -787,40 +853,82 @@ def place_mexc_buy_order(symbol, amount_usd, api_key, secret_key):
         if response is not None and _is_timestamp_error(response):
             response = _signed_request(
                 "POST", "/order", api_key, secret_key,
-                params=params, timeout=8, retries_on_network=False, force_time_sync=True
+                params=params, timeout=8, retries_on_network=False,
+                force_time_sync=True
             )
 
         if response is None:
-            return False, "No response from exchange. Verify the order on MEXC before retrying.", 0.0
+            return False, (
+                "No response from MEXC. The order status is UNKNOWN; "
+                "do not retry automatically. Verify Order History first."
+            ), 0.0
 
         res_data = _safe_json(response)
-        if response.status_code != 200 or not _extract_order_id(res_data):
-            return False, _api_error_message(response), 0.0
-
         order_id = _extract_order_id(res_data)
-        order_details = _wait_for_order_result(symbol, order_id, api_key, secret_key, timeout_seconds=4.0)
-        if not isinstance(order_details, dict):
-            return False, f"BUY order {order_id} was accepted but its execution could not be verified. Check MEXC Order History before retrying.", 0.0
 
-        status = _order_status(order_details)
+        if response.status_code != 200 or not order_id:
+            return False, (
+                f"MEXC rejected BUY for {formatted}: "
+                f"{_api_error_message(response)}"
+            ), 0.0
+
+        # IMPORTANT: an orderId is NOT proof of a fill.
+        order_details = _wait_for_order_result(
+            formatted, order_id, api_key, secret_key, timeout_seconds=8.0
+        )
+
+        if not isinstance(order_details, dict):
+            return False, (
+                f"BUY order {order_id} was accepted but MEXC execution could "
+                "not be verified. Check MEXC Order History before retrying."
+            ), 0.0
+
+        order_status = _order_status(order_details)
         executed_qty = _executed_quantity(order_details)
         fill_price = _average_fill_price(order_details)
 
-        if executed_qty <= 0 or not fill_price or fill_price <= 0:
+        if order_status not in {"FILLED", "PARTIALLY_FILLED"} or executed_qty <= 0:
             return False, (
-                f"BUY order {order_id} was not verified as executed (status={status or 'UNKNOWN'}, "
-                f"executedQty={executed_qty}). Check MEXC before retrying."
+                f"BUY order {order_id} was NOT executed: "
+                f"status={order_status or 'UNKNOWN'}, "
+                f"executedQty={executed_qty}. "
+                "No local position was created."
             ), 0.0
 
+        if not fill_price or fill_price <= 0:
+            return False, (
+                f"BUY order {order_id} has executed quantity {executed_qty}, "
+                "but MEXC returned no valid average fill price. "
+                "Verify the trade before retrying."
+            ), 0.0
+
+        quote_spent = (
+            order_details.get("cummulativeQuoteQty")
+            or order_details.get("cumQuoteQty")
+            or order_details.get("executedQuoteQty")
+            or order_details.get("cumulativeAmount")
+        )
+
+        spent_text = ""
+        try:
+            if quote_spent is not None and Decimal(str(quote_spent)) > 0:
+                spent_text = f" | Quote Spent: {Decimal(str(quote_spent))}"
+        except Exception:
+            pass
+
         return True, (
-            f"Order ID: {order_id} | Status: {status or 'UNKNOWN'} | "
+            f"BUY VERIFIED | Order ID: {order_id} | Status: {order_status} | "
             f"Executed Qty: {executed_qty} | Actual Avg Fill: {fill_price:.12f}"
+            f"{spent_text}"
         ), float(fill_price)
 
     except requests.RequestException as e:
-        return False, f"Network error while placing BUY. Verify the order on MEXC before retrying: {e}", 0.0
+        return False, (
+            "Network error while placing BUY. The order status may be UNKNOWN; "
+            f"verify MEXC Order History before retrying: {e}"
+        ), 0.0
     except Exception as e:
-        return False, str(e), 0.0
+        return False, f"BUY error: {type(e).__name__}: {e}", 0.0
 
 
 def place_mexc_sell_order_market(symbol, api_key, secret_key):
