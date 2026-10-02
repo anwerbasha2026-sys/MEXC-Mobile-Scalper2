@@ -1150,7 +1150,7 @@ def check_trade_conditions_from_main(symbol):
         hist_now = histogram[-1]
 
         has_recent_crossover = False
-        for offset in range(1, 2):
+        for offset in range(1, 3):
             idx = len(closes) - offset
             prev_idx = idx - 1
 
