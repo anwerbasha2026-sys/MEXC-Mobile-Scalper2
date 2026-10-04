@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build MEXC Mobile Scalper - ONN 100071481A
+    name: Build MEXC Mobile Scalper2 - ONN 100071481A
     runs-on: ubuntu-22.04
 
     steps:
@@ -199,7 +199,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MEXC-Mobile-Scalper-ONN-GN3-ARM32
+          name: MEXC-Mobile-Scalper2-ONN-GN3-ARM32
           path: bin/*.apk
           if-no-files-found: error
 
@@ -211,7 +211,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MEXC-Mobile-Scalper-Build-Log
+          name: MEXC-Mobile-Scalper2-Build-Log
           path: build.log
           if-no-files-found: warn
 
