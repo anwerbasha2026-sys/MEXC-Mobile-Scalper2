@@ -1194,7 +1194,7 @@ def check_trade_conditions_from_main(symbol):
             and ema21_now > ema200_now
             and last_closed_price >= ema9_now
             and is_volume_high
-            #and is_rsi_bullish
+            and is_rsi_bullish
             #and is_macd_bullish
         ):
             return True, last_closed_price, "Signal conditions confirmed on closed candle with RSI & MACD"
