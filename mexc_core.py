@@ -1192,7 +1192,7 @@ def check_trade_conditions_from_main(symbol):
             has_recent_crossover
             and ema9_now > ema21_now
             and ema21_now > ema200_now
-            and last_closed_price > vwap
+            and last_closed_price >= ema9_now
             and is_volume_high
             #and is_rsi_bullish
             #and is_macd_bullish
